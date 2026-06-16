@@ -1,0 +1,32 @@
+# ---- OS / editor ----
+.DS_Store
+*.swp
+*~
+
+# ---- VCS / Verdi simulation artifacts (generated under sim/) ----
+sim/simv
+sim/simv.daidir/
+sim/csrc/
+sim/*.log
+sim/*.fsdb
+sim/*.vcd
+sim/verdiLog/
+sim/novas.*
+sim/novas_dump.log
+sim/DVEfiles/
+sim/ucli.key
+sim/vcs.key
+sim/vc_hdrs.h
+sim/inter.vpd
+sim/AN.DB/
+sim/.vcs.timestamp
+sim/firmware.hex
+
+# ---- cocotb artifacts ----
+cocotb/sim_build/
+cocotb/results.xml
+cocotb/firmware.hex
+**/__pycache__/
+
+# ---- Icarus Verilog ----
+sim_brv32p
