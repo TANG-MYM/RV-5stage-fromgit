@@ -2,6 +2,7 @@
 // filelist.f — BRV32P (RV32I) RTL + testbench source list for VCS / Verdi
 // ----------------------------------------------------------------------------
 // Paths are relative to the sim/ directory. Run `make` from inside sim/.
+// Harvard structure: instruction ROM + data SRAM, no cache / no AXI.
 // ============================================================================
 
 // ---- Include directories (for `include "brv32p_defs.vh") ----
@@ -17,19 +18,9 @@
 ../rtl/core/csr.v
 ../rtl/core/brv32p_core.v
 
-// ---- Cache ----
-../rtl/cache/icache.v
-../rtl/cache/dcache.v
-
-// ---- Bus ----
-../rtl/bus/axi_interconnect.v
-../rtl/bus/axi_sram.v
-../rtl/bus/axi_periph_bridge.v
-
-// ---- Peripherals ----
-../rtl/periph/gpio.v
-../rtl/periph/uart.v
-../rtl/periph/timer.v
+// ---- Memories ----
+../rtl/mem/imem_rom.v
+../rtl/mem/dmem_sram.v
 
 // ---- SoC top ----
 ../rtl/brv32p_soc.v

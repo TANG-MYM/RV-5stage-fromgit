@@ -7,14 +7,8 @@ VERILOG_SOURCES = \
     $(PWD)/../rtl/core/hazard_unit.v \
     $(PWD)/../rtl/core/csr.v \
     $(PWD)/../rtl/core/brv32p_core.v \
-    $(PWD)/../rtl/cache/icache.v \
-    $(PWD)/../rtl/cache/dcache.v \
-    $(PWD)/../rtl/bus/axi_interconnect.v \
-    $(PWD)/../rtl/bus/axi_sram.v \
-    $(PWD)/../rtl/bus/axi_periph_bridge.v \
-    $(PWD)/../rtl/periph/gpio.v \
-    $(PWD)/../rtl/periph/uart.v \
-    $(PWD)/../rtl/periph/timer.v \
+    $(PWD)/../rtl/mem/imem_rom.v \
+    $(PWD)/../rtl/mem/dmem_sram.v \
     $(PWD)/../rtl/brv32p_soc.v
 
 TOPLEVEL = brv32p_soc

@@ -4,35 +4,34 @@ module tb_brv32p_soc;
 
   reg         clk;
   reg         rst_n;
-  reg  [31:0] gpio_in;
-  wire [31:0] gpio_out;
-  reg         uart_rx;
-  wire        uart_tx;
+  reg         start_pause;
+  reg  [11:0] start_pc;
+  reg  [1:0]  configuration;
+  wire [1:0]  core_status;
+  wire [1:0]  exceptions;
 
   initial clk = 0;
   always #5 clk = ~clk;
 
   brv32p_soc #(
-    .MEM_DEPTH (8192),
-    .INIT_FILE ("firmware.hex")
+    .IMEM_DEPTH (1024),
+    .DMEM_DEPTH (1024),
+    .INIT_FILE  ("firmware.hex")
   ) dut (
-    .clk      (clk),
-    .rst_n    (rst_n),
-    .gpio_in  (gpio_in),
-    .gpio_out (gpio_out),
-    .uart_rx  (uart_rx),
-    .uart_tx  (uart_tx)
+    .clk           (clk),
+    .rst_n         (rst_n),
+    .start_pause   (start_pause),
+    .start_pc      (start_pc),
+    .configuration (configuration),
+    .core_status   (core_status),
+    .exceptions    (exceptions)
   );
 
   `define CORE    dut.u_core
   `define RF      dut.u_core.u_regfile
   `define CSR     dut.u_core.u_csr
   `define BP      dut.u_core.u_bp
-  `define ICACHE  dut.u_icache
-  `define DCACHE  dut.u_dcache
-  `define GPIO    dut.u_gpio
-  `define UART    dut.u_uart
-  `define TIMER   dut.u_timer
+  `define DMEM    dut.u_dmem
 
   function [31:0] get_reg;
     input integer idx;
@@ -102,19 +101,22 @@ module tb_brv32p_soc;
   endtask
 
   // ── Main Test ─────────────────────────────────────────────────────────
-  integer valid_count, trained, s_idx, w_idx, bp_idx;
+  integer trained, bp_idx;
 
   initial begin
     $display("=============================================================");
-    $display("  BRV32P - 5-Stage Pipelined RV32IMC SoC Testbench");
+    $display("  BRV32P - 5-Stage Pipelined RV32I SoC Testbench");
     $display("=============================================================");
 
-    rst_n   = 0;
-    gpio_in = 32'b0;
-    uart_rx = 1'b1;
+    rst_n         = 0;
+    start_pause   = 1'b0;
+    start_pc      = 12'd0;       // firmware starts at PC 0
+    configuration = 2'b11;       // suppress both exceptions during functional test
 
     run(10);
     rst_n = 1;
+    run(2);
+    start_pause = 1'b1;          // rising edge -> start running from start_pc
 
     // ── Wait for ALU results to propagate through pipeline ──────────
     $display("\n--- Test: ALU Instructions (pipeline) ---");
@@ -167,43 +169,25 @@ module tb_brv32p_soc;
     wait_reg(23, 32'd0, 100000);
     check("Loop x23=0", get_reg(23), 32'd0);
 
-    // ── GPIO ────────────────────────────────────────────────────────
-    $display("\n--- Test: GPIO Output ---");
-    run(1000);
-    if ((gpio_out & 32'hFF) != 32'd0) begin
-      $display("[PASS] #%0d GPIO output active: 0x%08h", test_num+1, gpio_out);
-      pass_cnt = pass_cnt + 1; test_num = test_num + 1;
-    end else begin
-      $display("[INFO] #%0d GPIO output = 0x%08h (may not have reached via AXI yet)", test_num+1, gpio_out);
-      test_num = test_num + 1;
-    end
-
-    // ── GPIO Input ──────────────────────────────────────────────────
-    $display("\n--- Test: GPIO Input ---");
-    gpio_in = 32'hDEAD_BEEF;
-    run(5);
-    check("GPIO input sync", `GPIO.gpio_in_sync, 32'hDEAD_BEEF);
+    // ── Data SRAM check (SW then LW verified earlier via x11/x12) ────
+    $display("\n--- Test: Data SRAM ---");
+    check("DMEM[0] = 52", `DMEM.mem[0], 32'd52);
 
     // ── CSR ─────────────────────────────────────────────────────────
     $display("\n--- Test: CSR mcycle ---");
     check_nonzero("mcycle counter running", `CSR.mcycle[31:0]);
 
-    // ── I-Cache statistics ──────────────────────────────────────────
-    $display("\n--- Test: I-Cache ---");
-    begin
-      valid_count = 0;
-      for (s_idx = 0; s_idx < 64; s_idx = s_idx + 1)
-        for (w_idx = 0; w_idx < 2; w_idx = w_idx + 1)
-          if (`ICACHE.valid_mem[s_idx][w_idx]) valid_count = valid_count + 1;
-      if (valid_count > 0) begin
-        $display("[PASS] #%0d I-Cache: %0d valid lines", test_num+1, valid_count);
-        pass_cnt = pass_cnt + 1;
-      end else begin
-        $display("[FAIL] #%0d I-Cache: no valid lines", test_num+1);
-        fail_cnt = fail_cnt + 1;
-      end
-      test_num = test_num + 1;
-    end
+    // ── Run control / status ─────────────────────────────────────────
+    $display("\n--- Test: Run control / status ---");
+    check("core_status = running (01)", {30'b0, core_status}, 32'd1);
+    check("no exceptions",              {30'b0, exceptions},  32'd0);
+
+    // Pause: freeze the pipeline and confirm status reports paused
+    start_pause = 1'b0;
+    run(5);
+    check("core_status = paused (00)", {30'b0, core_status}, 32'd0);
+    start_pause = 1'b1;   // rising edge restarts from start_pc
+    run(5);
 
     // ── Branch Predictor state ──────────────────────────────────────
     $display("\n--- Test: Branch Predictor ---");

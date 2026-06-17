@@ -1,10 +1,27 @@
 // ============================================================================
 // brv32p_core.v — 5-Stage Pipelined RV32I CPU Core
+// ----------------------------------------------------------------------------
+// External run control & exception monitor:
+//   start_pause   : level run/pause. A rising edge (re)starts from start_pc;
+//                   while high the core runs, while low it freezes (pause).
+//   start_pc      : 12-bit byte address used as the (re)start PC.
+//   configuration : exception masks (1 = SUPPRESS that exception).
+//                     [0] PC-misaligned, [1] illegal instruction
+//   exceptions    : detected-and-not-suppressed exceptions (latched on halt).
+//                     [0] PC-misaligned, [1] illegal instruction
+//   core_status   : 00 paused/idle, 01 running, 10 halted on exception
 // ============================================================================
 
 module brv32p_core (
   input  wire        clk,
   input  wire        rst_n,
+
+  // Run control / status
+  input  wire        start_pause,
+  input  wire [11:0] start_pc,
+  input  wire [1:0]  configuration,
+  output wire [1:0]  core_status,
+  output wire [1:0]  exceptions,
 
   // Instruction memory interface
   output wire [31:0] imem_addr,
@@ -44,6 +61,39 @@ module brv32p_core (
   assign mem_stall  = dmem_stall | imem_stall;
 
   // ════════════════════════════════════════════════════════════════════
+  // Run / Pause / Restart control + exception halt
+  // ════════════════════════════════════════════════════════════════════
+  reg        start_pause_d;
+  reg        halted;          // set when an unmasked exception is detected
+  reg  [1:0] exceptions_r;    // latched exception cause
+  wire [1:0] exceptions_next; // exception(s) detected this cycle (after mask)
+  wire       any_exc;         // any unmasked exception this cycle (EX stage)
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) start_pause_d <= 1'b0;
+    else        start_pause_d <= start_pause;
+  end
+
+  wire restart = start_pause & ~start_pause_d;     // rising edge -> (re)start
+  wire run     = start_pause & ~halted;            // pipeline advances only when running
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      halted       <= 1'b0;
+      exceptions_r <= 2'b0;
+    end else if (restart) begin
+      halted       <= 1'b0;
+      exceptions_r <= 2'b0;
+    end else if (run && !halted && any_exc) begin
+      halted       <= 1'b1;
+      exceptions_r <= exceptions_next;
+    end
+  end
+
+  assign exceptions  = exceptions_r;
+  assign core_status = halted ? 2'b10 : (start_pause ? 2'b01 : 2'b00);
+
+  // ════════════════════════════════════════════════════════════════════
   // IF — Instruction Fetch
   // ════════════════════════════════════════════════════════════════════
   reg  [31:0] pc_if;
@@ -56,9 +106,12 @@ module brv32p_core (
   // PC Register
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-      pc_if <= RESET_VECTOR;
-    else if (!stall_if && !mem_stall)
+      pc_if <= {20'b0, start_pc};
+    else if (restart)
+      pc_if <= {20'b0, start_pc};         // (re)start from start_pc
+    else if (run && !stall_if && !mem_stall)
       pc_if <= pc_next;
+    // else: paused / stalled -> hold
   end
 
   assign imem_addr = pc_if;
@@ -110,15 +163,22 @@ module brv32p_core (
   reg        pred_taken_id;
 
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || flush_id) begin
+    if (!rst_n || restart) begin
       pc_id         <= 32'b0;
       instr_id      <= 32'h0000_0013; // NOP
       pred_taken_id <= 1'b0;
-    end else if (!stall_id && !mem_stall) begin
-      pc_id         <= pc_if;
-      instr_id      <= instr_raw_if;
-      pred_taken_id <= bp_pred_taken && bp_pred_valid;
+    end else if (run) begin
+      if (flush_id) begin
+        pc_id         <= 32'b0;
+        instr_id      <= 32'h0000_0013; // NOP
+        pred_taken_id <= 1'b0;
+      end else if (!stall_id && !mem_stall) begin
+        pc_id         <= pc_if;
+        instr_id      <= instr_raw_if;
+        pred_taken_id <= bp_pred_taken && bp_pred_valid;
+      end
     end
+    // else: paused -> hold
   end
 
   // ════════════════════════════════════════════════════════════════════
@@ -164,7 +224,7 @@ module brv32p_core (
   reg                pred_taken_ex;
 
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || flush_ex) begin
+    if (!rst_n || restart) begin
       ctrl_ex       <= {`CTRL_W{1'b0}};
       pc_ex         <= 32'b0;
       rs1_data_ex   <= 32'b0;
@@ -174,17 +234,30 @@ module brv32p_core (
       rs2_addr_ex   <= 5'b0;
       rd_addr_ex    <= 5'b0;
       pred_taken_ex <= 1'b0;
-    end else if (!stall_ex && !mem_stall) begin
-      ctrl_ex       <= ctrl_id;
-      pc_ex         <= pc_id;
-      rs1_data_ex   <= rs1_data_raw;
-      rs2_data_ex   <= rs2_data_raw;
-      imm_ex        <= imm_id;
-      rs1_addr_ex   <= rs1_addr_id;
-      rs2_addr_ex   <= rs2_addr_id;
-      rd_addr_ex    <= rd_addr_id;
-      pred_taken_ex <= pred_taken_id;
+    end else if (run) begin
+      if (flush_ex) begin
+        ctrl_ex       <= {`CTRL_W{1'b0}};
+        pc_ex         <= 32'b0;
+        rs1_data_ex   <= 32'b0;
+        rs2_data_ex   <= 32'b0;
+        imm_ex        <= 32'b0;
+        rs1_addr_ex   <= 5'b0;
+        rs2_addr_ex   <= 5'b0;
+        rd_addr_ex    <= 5'b0;
+        pred_taken_ex <= 1'b0;
+      end else if (!stall_ex && !mem_stall) begin
+        ctrl_ex       <= ctrl_id;
+        pc_ex         <= pc_id;
+        rs1_data_ex   <= rs1_data_raw;
+        rs2_data_ex   <= rs2_data_raw;
+        imm_ex        <= imm_id;
+        rs1_addr_ex   <= rs1_addr_id;
+        rs2_addr_ex   <= rs2_addr_id;
+        rd_addr_ex    <= rd_addr_id;
+        pred_taken_ex <= pred_taken_id;
+      end
     end
+    // else: paused -> hold
   end
 
   // ════════════════════════════════════════════════════════════════════
@@ -262,6 +335,20 @@ module brv32p_core (
   assign branch_target_ex = actual_taken ? branch_target_computed :
                             (pc_ex + 32'd4);
 
+  // ── Exception detection (EX stage) ─────────────────────────────────────
+  //  - PC-misaligned : a taken branch/jump whose target is not 4-byte aligned
+  //  - illegal instr : decoder flagged the EX-stage instruction as illegal
+  //  configuration[i] = 1 SUPPRESSES the corresponding exception.
+  wire exc_misalign_raw = is_branch_or_jump && actual_taken &&
+                          (branch_target_computed[1:0] != 2'b00);
+  wire exc_illegal_raw  = ctrl_ex[`CTRL_ILLEGAL];
+
+  wire exc_misalign = exc_misalign_raw & ~configuration[0];
+  wire exc_illegal  = exc_illegal_raw  & ~configuration[1];
+
+  assign exceptions_next = {exc_illegal, exc_misalign};
+  assign any_exc         = exc_misalign | exc_illegal;
+
   // Branch predictor update
   assign bp_update_en     = (ctrl_ex[`CTRL_BR_TYPE] != BR_NONE);
   assign bp_update_pc     = pc_ex;
@@ -292,27 +379,36 @@ module brv32p_core (
   assign alu_result_mem = ex_result_mem;  // Forwarding tap
 
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || flush_mem) begin
+    if (!rst_n || restart) begin
       ctrl_mem       <= {`CTRL_W{1'b0}};
       pc_mem         <= 32'b0;
       ex_result_mem  <= 32'b0;
       rs2_data_mem   <= 32'b0;
       rd_addr_mem    <= 5'b0;
-    end else if (!mem_stall) begin
-      ctrl_mem       <= ctrl_ex;
-      pc_mem         <= pc_ex;
-      ex_result_mem  <= ex_result;
-      rs2_data_mem   <= rs2_fwd;
-      rd_addr_mem    <= rd_addr_ex;
+    end else if (run) begin
+      if (flush_mem) begin
+        ctrl_mem       <= {`CTRL_W{1'b0}};
+        pc_mem         <= 32'b0;
+        ex_result_mem  <= 32'b0;
+        rs2_data_mem   <= 32'b0;
+        rd_addr_mem    <= 5'b0;
+      end else if (!mem_stall) begin
+        ctrl_mem       <= ctrl_ex;
+        pc_mem         <= pc_ex;
+        ex_result_mem  <= ex_result;
+        rs2_data_mem   <= rs2_fwd;
+        rd_addr_mem    <= rd_addr_ex;
+      end
     end
+    // else: paused -> hold
   end
 
   // ════════════════════════════════════════════════════════════════════
   // MEM — Memory Access
   // ════════════════════════════════════════════════════════════════════
   assign dmem_addr     = ex_result_mem;
-  assign dmem_rd       = ctrl_mem[`CTRL_MEM_RD];
-  assign dmem_wr       = ctrl_mem[`CTRL_MEM_WR];
+  assign dmem_rd       = ctrl_mem[`CTRL_MEM_RD] & run;
+  assign dmem_wr       = ctrl_mem[`CTRL_MEM_WR] & run;
   assign dmem_width    = ctrl_mem[`CTRL_MEM_WIDTH];
   assign dmem_sign_ext = ctrl_mem[`CTRL_MEM_SIGN];
   assign dmem_wdata    = rs2_data_mem;
@@ -352,17 +448,18 @@ module brv32p_core (
   reg [`CTRL_W-1:0]  ctrl_wb;
 
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+    if (!rst_n || restart) begin
       ctrl_wb      <= {`CTRL_W{1'b0}};
       mem_result_wb <= 32'b0;
       csr_rdata_wb <= 32'b0;
       rd_addr_wb   <= 5'b0;
-    end else if (!mem_stall) begin
+    end else if (run && !mem_stall) begin
       ctrl_wb      <= ctrl_mem;
       mem_result_wb <= mem_result;
       csr_rdata_wb <= csr_rdata;
       rd_addr_wb   <= rd_addr_mem;
     end
+    // else: paused -> hold
   end
 
   // ════════════════════════════════════════════════════════════════════
@@ -391,21 +488,21 @@ module brv32p_core (
   csr u_csr (
     .clk           (clk),
     .rst_n         (rst_n),
-    .csr_en        (ctrl_mem[`CTRL_CSR_EN] && !trap_enter),
+    .csr_en        (ctrl_mem[`CTRL_CSR_EN] && !trap_enter && run),
     .csr_addr      (ctrl_mem[`CTRL_CSR_ADDR]),
     .csr_op        (ctrl_mem[`CTRL_CSR_OP]),
     .csr_wdata     (csr_wdata),
     .csr_rdata     (csr_rdata),
-    .trap_enter    (trap_enter),
+    .trap_enter    (trap_enter && run),
     .trap_cause    (trap_cause),
     .trap_val      (trap_val),
     .trap_pc       (pc_mem),
     .mtvec_out     (mtvec_out),
     .mepc_out      (mepc_out),
-    .mret          (mret_ex),
+    .mret          (mret_ex && run),
     .ext_irq       (ext_irq),
     .timer_irq     (timer_irq),
-    .instr_retired (ctrl_wb[`CTRL_REG_WR] || ctrl_wb[`CTRL_MEM_WR] || ctrl_wb[`CTRL_ECALL]),
+    .instr_retired ((ctrl_wb[`CTRL_REG_WR] || ctrl_wb[`CTRL_MEM_WR] || ctrl_wb[`CTRL_ECALL]) && run),
     .irq_pending   (irq_pending)
   );
 
