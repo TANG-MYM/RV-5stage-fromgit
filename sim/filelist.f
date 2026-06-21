@@ -15,7 +15,6 @@
 ../rtl/core/decoder.v
 ../rtl/core/branch_predictor.v
 ../rtl/core/hazard_unit.v
-../rtl/core/csr.v
 ../rtl/core/brv32p_core.v
 
 // ---- Memories ----

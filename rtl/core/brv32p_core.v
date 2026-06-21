@@ -9,7 +9,17 @@
 //                     [0] PC-misaligned, [1] illegal instruction
 //   exceptions    : detected-and-not-suppressed exceptions (latched on halt).
 //                     [0] PC-misaligned, [1] illegal instruction
-//   core_status   : 00 paused/idle, 01 running, 10 halted on exception
+//   core_status   : per-bit status, both cleared by a Start pulse (start_pause
+//                   rising edge, which re-fetches from start_pc):
+//                     [0] IDLE : set on exception halt OR after a WFI retires
+//                     [1] WFI  : set after a WFI retires
+//                   So {[1],[0]} = 00 running/paused, 01 exception halt,
+//                   11 WFI idle.
+//
+// NOTE: CSR/Zicsr and the trap mechanism (ECALL/EBREAK/MRET, mtvec/mepc,
+//       interrupts) have been removed from this core. WFI is the only
+//       remaining SYSTEM instruction: it drains older instructions, stops
+//       fetch, flushes younger instructions, and parks the core in IDLE.
 // ============================================================================
 
 module brv32p_core (
@@ -22,6 +32,7 @@ module brv32p_core (
   input  wire [1:0]  configuration,
   output wire [1:0]  core_status,
   output wire [1:0]  exceptions,
+  output wire [31:0] exceptions_pc,       // PC of the faulting instruction (latched on halt)
 
   // Instruction memory interface
   output wire [31:0] imem_addr,
@@ -63,35 +74,71 @@ module brv32p_core (
   // ════════════════════════════════════════════════════════════════════
   // Run / Pause / Restart control + exception halt
   // ════════════════════════════════════════════════════════════════════
-  reg        start_pause_d;
-  reg        halted;          // set when an unmasked exception is detected
-  reg  [1:0] exceptions_r;    // latched exception cause
-  wire [1:0] exceptions_next; // exception(s) detected this cycle (after mask)
-  wire       any_exc;         // any unmasked exception this cycle (EX stage)
+  reg         start_pause_d;
+  reg         halted;          // set when an unmasked exception is detected
+  reg  [1:0]  exceptions_r;    // latched exception cause
+  reg  [31:0] exceptions_pc_r; // latched PC of the faulting instruction
+  wire [1:0]  exceptions_next; // exception(s) detected this cycle (after mask)
+  wire        any_exc;         // any unmasked exception this cycle (EX stage)
+
+  // WFI (Wait-For-Interrupt) state
+  reg         wfi_active;      // WFI in flight: draining older instrs, fetch stopped
+  reg         wfi_idle;        // WFI retired -> core parked in IDLE until Start pulse
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) start_pause_d <= 1'b0;
     else        start_pause_d <= start_pause;
   end
 
-  wire restart = start_pause & ~start_pause_d;     // rising edge -> (re)start
-  wire run     = start_pause & ~halted;            // pipeline advances only when running
+  wire restart = start_pause & ~start_pause_d;        // rising edge -> (re)start
+  wire run     = start_pause & ~halted & ~wfi_idle;   // pipeline advances only when running
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      halted       <= 1'b0;
-      exceptions_r <= 2'b0;
+      halted          <= 1'b0;
+      exceptions_r    <= 2'b0;
+      exceptions_pc_r <= 32'b0;
     end else if (restart) begin
-      halted       <= 1'b0;
-      exceptions_r <= 2'b0;
+      halted          <= 1'b0;
+      exceptions_r    <= 2'b0;
+      exceptions_pc_r <= 32'b0;
     end else if (run && !halted && any_exc) begin
-      halted       <= 1'b1;
-      exceptions_r <= exceptions_next;
+      halted          <= 1'b1;
+      exceptions_r    <= exceptions_next;
+      exceptions_pc_r <= pc_ex;          // EX-stage PC == faulting instruction's PC
     end
   end
 
-  assign exceptions  = exceptions_r;
-  assign core_status = halted ? 2'b10 : (start_pause ? 2'b01 : 2'b00);
+  // ── WFI control ─────────────────────────────────────────────────────────
+  //  1. WFI reaches EX  -> wfi_active: stop fetch, flush younger instructions,
+  //     let WFI plus all older (in MEM/WB) instructions drain in program order.
+  //  2. WFI reaches WB  -> it retires; core enters wfi_idle (IDLE state).
+  //  3. A new Start pulse (start_pause rising edge) clears the state and the
+  //     pipeline (via `restart`) and re-fetches from start_pc.
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      wfi_active <= 1'b0;
+      wfi_idle   <= 1'b0;
+    end else if (restart) begin
+      wfi_active <= 1'b0;
+      wfi_idle   <= 1'b0;
+    end else if (run) begin
+      if (ctrl_wb[`CTRL_WFI]) begin           // WFI retiring in WB
+        wfi_active <= 1'b0;
+        wfi_idle   <= 1'b1;
+      end else if (ctrl_ex[`CTRL_WFI]) begin  // WFI reached EX
+        wfi_active <= 1'b1;
+      end
+    end
+  end
+
+  assign exceptions    = exceptions_r;
+  assign exceptions_pc = exceptions_pc_r;
+  // core_status[0] = IDLE : high on exception halt or after a WFI retires;
+  //                         driven low again by a Start pulse (restart).
+  // core_status[1] = WFI  : high after a WFI retires; low again on a Start pulse.
+  assign core_status[0] = halted | wfi_idle;
+  assign core_status[1] = wfi_idle;
 
   // ════════════════════════════════════════════════════════════════════
   // IF — Instruction Fetch
@@ -109,13 +156,13 @@ module brv32p_core (
       pc_if <= {20'b0, start_pc};
     else if (restart)
       pc_if <= {20'b0, start_pc};         // (re)start from start_pc
-    else if (run && !stall_if && !mem_stall)
+    else if (run && !stall_if && !mem_stall && !wfi_active)
       pc_if <= pc_next;
-    // else: paused / stalled -> hold
+    // else: paused / stalled / WFI -> hold (stop fetch)
   end
 
   assign imem_addr = pc_if;
-  assign imem_rd   = 1'b1;
+  assign imem_rd   = ~(wfi_active | wfi_idle);   // WFI stops instruction fetch
   assign instr_raw_if = imem_rdata;
 
   // Branch predictor
@@ -139,16 +186,9 @@ module brv32p_core (
   // Next PC MUX
   wire        branch_mispredict_ex;
   wire [31:0] branch_target_ex;
-  wire        trap_enter;
-  wire [31:0] mtvec_out, mepc_out;
-  wire        mret_ex;
 
   always @(*) begin
-    if (trap_enter)
-      pc_next = mtvec_out;
-    else if (mret_ex)
-      pc_next = mepc_out;
-    else if (branch_mispredict_ex)
+    if (branch_mispredict_ex)
       pc_next = branch_target_ex;
     else if (bp_pred_taken && bp_pred_valid)
       pc_next = bp_pred_target;
@@ -355,8 +395,9 @@ module brv32p_core (
   assign bp_update_taken  = branch_taken_ex;
   assign bp_update_target = branch_target_computed;
 
-  // MRET
-  assign mret_ex = ctrl_ex[`CTRL_MRET];
+  // WFI flush: while a WFI is in flight (EX or draining), kill younger
+  // instructions in ID/EX so they never commit.
+  wire wfi_flush = ctrl_ex[`CTRL_WFI] | wfi_active;
 
   // EX result select
   reg [31:0] ex_result;
@@ -371,7 +412,6 @@ module brv32p_core (
   // ════════════════════════════════════════════════════════════════════
   // EX/MEM Pipeline Register
   // ════════════════════════════════════════════════════════════════════
-  reg [31:0]         pc_mem;
   reg [31:0]         ex_result_mem, rs2_data_mem;
   reg [4:0]          rd_addr_mem;
   reg [`CTRL_W-1:0]  ctrl_mem;
@@ -381,20 +421,17 @@ module brv32p_core (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n || restart) begin
       ctrl_mem       <= {`CTRL_W{1'b0}};
-      pc_mem         <= 32'b0;
       ex_result_mem  <= 32'b0;
       rs2_data_mem   <= 32'b0;
       rd_addr_mem    <= 5'b0;
     end else if (run) begin
       if (flush_mem) begin
         ctrl_mem       <= {`CTRL_W{1'b0}};
-        pc_mem         <= 32'b0;
         ex_result_mem  <= 32'b0;
         rs2_data_mem   <= 32'b0;
         rd_addr_mem    <= 5'b0;
       end else if (!mem_stall) begin
         ctrl_mem       <= ctrl_ex;
-        pc_mem         <= pc_ex;
         ex_result_mem  <= ex_result;
         rs2_data_mem   <= rs2_fwd;
         rd_addr_mem    <= rd_addr_ex;
@@ -417,47 +454,22 @@ module brv32p_core (
   wire [31:0] mem_result;
   assign mem_result = ctrl_mem[`CTRL_MEM_RD] ? dmem_rdata : ex_result_mem;
 
-  // Trap logic
-  wire        irq_pending;
-  wire [31:0] csr_rdata;
-
-  assign trap_enter = ctrl_mem[`CTRL_ECALL] || ctrl_mem[`CTRL_EBREAK] ||
-                      ctrl_mem[`CTRL_ILLEGAL] || irq_pending;
-
-  reg [31:0] trap_cause, trap_val;
-  always @(*) begin
-    trap_cause = 32'b0;
-    trap_val   = 32'b0;
-    if (ctrl_mem[`CTRL_ILLEGAL]) begin
-      trap_cause = 32'd2;
-    end else if (ctrl_mem[`CTRL_ECALL]) begin
-      trap_cause = 32'd11;
-    end else if (ctrl_mem[`CTRL_EBREAK]) begin
-      trap_cause = 32'd3;
-    end else if (irq_pending) begin
-      trap_cause = {1'b1, 31'd11};
-    end
-  end
-
   // ════════════════════════════════════════════════════════════════════
   // MEM/WB Pipeline Register
   // ════════════════════════════════════════════════════════════════════
   reg [31:0]         mem_result_wb;
-  reg [31:0]         csr_rdata_wb;
   reg [4:0]          rd_addr_wb;
   reg [`CTRL_W-1:0]  ctrl_wb;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n || restart) begin
-      ctrl_wb      <= {`CTRL_W{1'b0}};
+      ctrl_wb       <= {`CTRL_W{1'b0}};
       mem_result_wb <= 32'b0;
-      csr_rdata_wb <= 32'b0;
-      rd_addr_wb   <= 5'b0;
+      rd_addr_wb    <= 5'b0;
     end else if (run && !mem_stall) begin
-      ctrl_wb      <= ctrl_mem;
+      ctrl_wb       <= ctrl_mem;
       mem_result_wb <= mem_result;
-      csr_rdata_wb <= csr_rdata;
-      rd_addr_wb   <= rd_addr_mem;
+      rd_addr_wb    <= rd_addr_mem;
     end
     // else: paused -> hold
   end
@@ -466,45 +478,12 @@ module brv32p_core (
   // WB — Writeback
   // ════════════════════════════════════════════════════════════════════
   always @(*) begin
-    case (ctrl_wb[`CTRL_WB_SEL])
-      WB_MEM:    wb_rd_data = mem_result_wb;
-      WB_CSR:    wb_rd_data = csr_rdata_wb;
-      default:   wb_rd_data = mem_result_wb;
-    endcase
+    wb_rd_data = mem_result_wb;   // WB_ALU/WB_PC4 fold into mem_result via EX
   end
 
   assign wb_wr_en   = ctrl_wb[`CTRL_REG_WR];
   assign wb_rd_addr = rd_addr_wb;
   assign wb_data_fwd = wb_rd_data;  // Forwarding tap
-
-  // ════════════════════════════════════════════════════════════════════
-  // CSR Unit
-  // ════════════════════════════════════════════════════════════════════
-  wire [31:0] csr_wdata;
-  // ctrl_mem[CTRL_CSR_OP] is bits [19:17]; bit 2 of that = bit 19
-  assign csr_wdata = ctrl_mem[19] ?
-    {27'b0, rd_addr_mem} : ex_result_mem;
-
-  csr u_csr (
-    .clk           (clk),
-    .rst_n         (rst_n),
-    .csr_en        (ctrl_mem[`CTRL_CSR_EN] && !trap_enter && run),
-    .csr_addr      (ctrl_mem[`CTRL_CSR_ADDR]),
-    .csr_op        (ctrl_mem[`CTRL_CSR_OP]),
-    .csr_wdata     (csr_wdata),
-    .csr_rdata     (csr_rdata),
-    .trap_enter    (trap_enter && run),
-    .trap_cause    (trap_cause),
-    .trap_val      (trap_val),
-    .trap_pc       (pc_mem),
-    .mtvec_out     (mtvec_out),
-    .mepc_out      (mepc_out),
-    .mret          (mret_ex && run),
-    .ext_irq       (ext_irq),
-    .timer_irq     (timer_irq),
-    .instr_retired ((ctrl_wb[`CTRL_REG_WR] || ctrl_wb[`CTRL_MEM_WR] || ctrl_wb[`CTRL_ECALL]) && run),
-    .irq_pending   (irq_pending)
-  );
 
   // ════════════════════════════════════════════════════════════════════
   // Hazard Unit
@@ -522,7 +501,7 @@ module brv32p_core (
     .mem_reg_wr       (ctrl_mem[`CTRL_REG_WR]),
     .wb_rd            (rd_addr_wb),
     .wb_reg_wr        (ctrl_wb[`CTRL_REG_WR]),
-    .branch_mispredict(branch_mispredict_ex || trap_enter || mret_ex),
+    .branch_mispredict(branch_mispredict_ex || wfi_flush),
     .jump_ex          (ctrl_ex[`CTRL_JAL] || ctrl_ex[`CTRL_JALR]),
     .fwd_rs1          (fwd_rs1),
     .fwd_rs2          (fwd_rs2),

@@ -145,20 +145,12 @@ module decoder (
       end
 
       OP_SYSTEM: begin
-        if (funct3 == 3'b000) begin
-          case (instr[31:20])
-            12'h000: ctrl[`CTRL_ECALL]   = 1'b1;
-            12'h001: ctrl[`CTRL_EBREAK]  = 1'b1;
-            12'h302: ctrl[`CTRL_MRET]    = 1'b1;
-            default: ctrl[`CTRL_ILLEGAL] = 1'b1;
-          endcase
-        end else begin
-          ctrl[`CTRL_CSR_EN]   = 1'b1;
-          ctrl[`CTRL_CSR_OP]   = funct3;
-          ctrl[`CTRL_CSR_ADDR] = instr[31:20];
-          ctrl[`CTRL_REG_WR]   = 1'b1;
-          ctrl[`CTRL_WB_SEL]   = WB_CSR;
-        end
+        // CSR/trap (Zicsr, ECALL/EBREAK/MRET) support removed.
+        // Only WFI (0x10500073) remains; everything else is illegal.
+        if (funct3 == 3'b000 && instr[31:20] == 12'h105)
+          ctrl[`CTRL_WFI] = 1'b1;
+        else
+          ctrl[`CTRL_ILLEGAL] = 1'b1;
       end
 
       OP_FENCE: begin

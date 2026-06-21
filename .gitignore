@@ -22,10 +22,7 @@ sim/AN.DB/
 sim/.vcs.timestamp
 sim/firmware.hex
 
-# ---- cocotb artifacts ----
-cocotb/sim_build/
-cocotb/results.xml
-cocotb/firmware.hex
+# ---- Python artifacts ----
 **/__pycache__/
 
 # ---- Icarus Verilog ----

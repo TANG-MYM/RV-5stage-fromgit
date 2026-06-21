@@ -29,7 +29,6 @@ module tb_brv32p_soc;
 
   `define CORE    dut.u_core
   `define RF      dut.u_core.u_regfile
-  `define CSR     dut.u_core.u_csr
   `define BP      dut.u_core.u_bp
   `define DMEM    dut.u_dmem
 
@@ -173,13 +172,9 @@ module tb_brv32p_soc;
     $display("\n--- Test: Data SRAM ---");
     check("DMEM[0] = 52", `DMEM.mem[0], 32'd52);
 
-    // ── CSR ─────────────────────────────────────────────────────────
-    $display("\n--- Test: CSR mcycle ---");
-    check_nonzero("mcycle counter running", `CSR.mcycle[31:0]);
-
     // ── Run control / status ─────────────────────────────────────────
     $display("\n--- Test: Run control / status ---");
-    check("core_status = running (01)", {30'b0, core_status}, 32'd1);
+    check("core_status = running (00)", {30'b0, core_status}, 32'd0);
     check("no exceptions",              {30'b0, exceptions},  32'd0);
 
     // Pause: freeze the pipeline and confirm status reports paused

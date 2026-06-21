@@ -22,12 +22,9 @@
 `define CTRL_BR_TYPE    25:23
 `define CTRL_JAL        22
 `define CTRL_JALR       21
-`define CTRL_CSR_EN     20
-`define CTRL_CSR_OP     19:17
-`define CTRL_CSR_ADDR   16:5
-`define CTRL_ECALL      4
-`define CTRL_EBREAK     3
-`define CTRL_MRET       2
+// bits [20:5] reserved (formerly Zicsr CSR_EN/CSR_OP/CSR_ADDR — CSR support removed)
+`define CTRL_WFI        4       // Wait-For-Interrupt (reuses former ECALL bit)
+// bits [3:2] reserved (formerly EBREAK/MRET — trap support removed)
 `define CTRL_FENCE      1
 `define CTRL_ILLEGAL    0
 `endif
@@ -72,7 +69,6 @@ localparam [2:0] MD_REMU   = 3'b111;
 localparam [2:0] WB_ALU    = 3'd0;
 localparam [2:0] WB_MEM    = 3'd1;
 localparam [2:0] WB_PC4    = 3'd2;
-localparam [2:0] WB_CSR    = 3'd3;
 localparam [2:0] WB_MULDIV = 3'd4;  // unused in RV32I build
 
 // ── Memory access width ──────────────────────────────────────────────
@@ -94,29 +90,16 @@ localparam [1:0] FWD_NONE   = 2'b00;
 localparam [1:0] FWD_EX_MEM = 2'b01;
 localparam [1:0] FWD_MEM_WB = 2'b10;
 
-// ── CSR Addresses ────────────────────────────────────────────────────
-localparam [11:0] CSR_MSTATUS  = 12'h300;
-localparam [11:0] CSR_MIE      = 12'h304;
-localparam [11:0] CSR_MTVEC    = 12'h305;
-localparam [11:0] CSR_MSCRATCH = 12'h340;
-localparam [11:0] CSR_MEPC     = 12'h341;
-localparam [11:0] CSR_MCAUSE   = 12'h342;
-localparam [11:0] CSR_MTVAL    = 12'h343;
-localparam [11:0] CSR_MIP      = 12'h344;
-localparam [11:0] CSR_MCYCLE   = 12'hB00;
-localparam [11:0] CSR_MINSTRET = 12'hB02;
-localparam [11:0] CSR_MHARTID  = 12'hF14;
-
 // ── Memory Map ───────────────────────────────────────────────────────
 localparam [31:0] RESET_VECTOR = 32'h0000_0000;
 localparam [31:0] IMEM_BASE    = 32'h0000_0000;
 localparam [31:0] DMEM_BASE    = 32'h1000_0000;
-localparam [31:0] PERIPH_BASE  = 32'h2000_0000;
-localparam [31:0] GPIO_BASE    = 32'h2000_0000;
-localparam [31:0] UART_BASE    = 32'h2000_0100;
-localparam [31:0] TIMER_BASE   = 32'h2000_0200;
+// localparam [31:0] PERIPH_BASE  = 32'h2000_0000;//外设完全没有使用
+// localparam [31:0] GPIO_BASE    = 32'h2000_0000;
+// localparam [31:0] UART_BASE    = 32'h2000_0100;
+// localparam [31:0] TIMER_BASE   = 32'h2000_0200;
 
-// ── Cache parameters ─────────────────────────────────────────────────
+// ── Cache parameters //现在删掉了，不使用cache─────────────────────────────────────────────────
 localparam ICACHE_SETS   = 64;
 localparam ICACHE_WAYS   = 2;
 localparam ICACHE_LINE_W = 128;
@@ -124,7 +107,7 @@ localparam DCACHE_SETS   = 64;
 localparam DCACHE_WAYS   = 2;
 localparam DCACHE_LINE_W = 128;
 
-// ── AXI4-Lite parameters ─────────────────────────────────────────────
+// ── AXI4-Lite parameters //也不使用─────────────────────────────────────────────
 localparam AXI_ADDR_W = 32;
 localparam AXI_DATA_W = 32;
 localparam AXI_STRB_W = AXI_DATA_W / 8;

@@ -18,8 +18,9 @@ module brv32p_soc #(
   input  wire        start_pause,         // rising edge restarts @ start_pc; level: 1=run, 0=pause
   input  wire [11:0] start_pc,            // (re)start PC (byte address)
   input  wire [1:0]  configuration,       // exception masks (1 = suppress): [0]=misalign, [1]=illegal
-  output wire [1:0]  core_status,         // 00 paused, 01 running, 10 halted-on-exception
-  output wire [1:0]  exceptions           // [0]=PC-misaligned, [1]=illegal instruction
+  output wire [1:0]  core_status,         // [0]=IDLE (exception halt or WFI retire), [1]=WFI retired
+  output wire [1:0]  exceptions,          // [0]=PC-misaligned, [1]=illegal instruction
+  output wire [31:0] exceptions_pc        // PC of the faulting instruction (latched on halt)
 );
 
   // ── Core <-> Instruction memory ────────────────────────────────────────
@@ -43,6 +44,7 @@ module brv32p_soc #(
     .configuration (configuration),
     .core_status   (core_status),
     .exceptions    (exceptions),
+    .exceptions_pc (exceptions_pc),
     .imem_addr     (core_imem_addr),
     .imem_rd       (core_imem_rd),
     .imem_rdata    (core_imem_rdata),

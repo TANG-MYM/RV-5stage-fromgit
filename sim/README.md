@@ -22,7 +22,7 @@ source ./setup_env.sh
 # 2) 编译（默认开启 FSDB 波形 + KDB 源码调试）
 make comp
 
-# 3) 运行仿真（自动把 ../firmware/firmware.hex 拷到当前目录）
+# 3) 运行仿真（自动把 ../tb/firmware.hex 拷到当前目录）
 make run
 
 # 4) 用 Verdi 打开波形做功能验证
@@ -40,8 +40,7 @@ make clean
 - **VCD（可选）**：testbench 仍保留 VCD 通路，运行时加 plusarg 即可：
   `make run RUN_ARGS="+VCD"`，生成 `brv32p_soc.vcd`。
 - **固件**：SoC 通过 `$readmemh("firmware.hex", ...)` 加载程序，Makefile 会自动
-  把 `../firmware/firmware.hex` 拷贝到运行目录。若要重新生成固件：
-  `cd ../firmware && python gen_firmware.py`。
+  把 `../tb/firmware.hex` 拷贝到运行目录。
 - **FSDB PLI**：当 `VERDI_HOME` 已设置时，Makefile 会自动链接
   `$VERDI_HOME/share/PLI/VCS/$PLATFORM/{novas.tab,pli.a}`。如平台目录不是
   `LINUX64`，在 `setup_env.sh` 里修改 `PLATFORM`。
