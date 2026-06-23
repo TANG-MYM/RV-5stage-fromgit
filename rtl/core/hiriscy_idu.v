@@ -1,20 +1,61 @@
 // ============================================================================
-// decoder.v — RV32I Instruction Decoder for BRV32P
+// hiriscy_idu.v — Instruction Decode Unit (IDU)
 // ============================================================================
-// Decodes a 32-bit instruction into the control bundle plus register
-// addresses and immediate value.
+// Combinational decode of a 32-bit instruction into the control bundle plus
+// register addresses and the sign-extended immediate. Register reads are done
+// by the RF (hiriscy_rf) using the addresses produced here.
+//
+// This unit also owns all pipeline-HAZARD handling (previously a separate
+// hiriscy_hazard block): load-use hazard detection, data-forwarding control,
+// and the stall/flush signals. It remains purely combinational — every piece
+// of pipeline STATE (the stage registers) lives in the core top, which simply
+// feeds the EX/MEM/WB register addresses and write-enables back in here.
+//
+//   - Load-use hazard : a load in EX whose rd feeds the instruction now in ID
+//                       -> stall IF/ID and bubble EX for one cycle.
+//   - Forwarding      : EX/MEM and MEM/WB results bypassed into the EX operands
+//                       (control sent to the EXU forwarding MUXes).
+//   - Control hazard  : a taken branch/jump (or a WFI) redirects the front end
+//                       -> flush ID and EX.
+//
+// SYSTEM handling: CSR/Zicsr and ECALL/EBREAK/MRET are NOT supported. WFI
+// (0x10500073) is the only legal SYSTEM instruction; anything else is illegal.
 // ============================================================================
 
-module decoder (
+module hiriscy_idu (
+  // ── Instruction decode ────────────────────────────────────────────────
   input  wire [31:0]          instr,
   output wire [4:0]           rs1_addr,
   output wire [4:0]           rs2_addr,
   output wire [4:0]           rd_addr,
   output reg  [31:0]          imm,
-  output reg  [43:0]          ctrl   // CTRL_W = 44
+  output reg  [43:0]          ctrl,   // CTRL_W = 44
+
+  // ── Hazard inputs (taps from the core's pipeline registers) ───────────
+  input  wire [4:0]           ex_rs1,      // EX-stage rs1 addr (forwarding)
+  input  wire [4:0]           ex_rs2,      // EX-stage rs2 addr (forwarding)
+  input  wire [4:0]           ex_rd,       // EX-stage rd addr  (load-use)
+  input  wire                 ex_mem_rd,   // EX-stage is a load (load-use)
+  input  wire [4:0]           mem_rd,
+  input  wire                 mem_reg_wr,
+  input  wire [4:0]           wb_rd,
+  input  wire                 wb_reg_wr,
+  input  wire                 branch_redirect, // taken branch/jump or WFI flush
+
+  // ── Forwarding controls (to EXU) ──────────────────────────────────────
+  output reg  [1:0]           fwd_rs1,
+  output reg  [1:0]           fwd_rs2,
+
+  // ── Pipeline control (to core stage registers) ───────────────────────
+  output reg                  stall_if,
+  output reg                  stall_id,
+  output reg                  stall_ex,
+  output reg                  flush_id,
+  output reg                  flush_ex,
+  output reg                  flush_mem
 );
 
-  `include "brv32p_defs.vh"
+  `include "hiriscy_defs.vh"
 
   wire [6:0] opcode;
   wire [2:0] funct3;
@@ -161,6 +202,62 @@ module decoder (
         ctrl[`CTRL_ILLEGAL] = 1'b1;
       end
     endcase
+  end
+
+  // ════════════════════════════════════════════════════════════════════
+  // Hazard detection & data forwarding (integrated, combinational)
+  // ════════════════════════════════════════════════════════════════════
+
+  // ── Load-use hazard ───────────────────────────────────────────────────
+  // A load currently in EX produces its data too late for the dependent
+  // instruction in ID; stall one cycle so the value can later be forwarded.
+  wire load_use_hazard;
+  assign load_use_hazard = ex_mem_rd && (ex_rd != 5'd0) &&
+                           ((ex_rd == rs1_addr) || (ex_rd == rs2_addr));
+
+  // ── Data forwarding (based on EX-stage source addresses) ──────────────
+  always @(*) begin
+    // RS1
+    if (mem_reg_wr && (mem_rd != 5'd0) && (mem_rd == ex_rs1))
+      fwd_rs1 = FWD_EX_MEM;
+    else if (wb_reg_wr && (wb_rd != 5'd0) && (wb_rd == ex_rs1))
+      fwd_rs1 = FWD_MEM_WB;
+    else
+      fwd_rs1 = FWD_NONE;
+
+    // RS2
+    if (mem_reg_wr && (mem_rd != 5'd0) && (mem_rd == ex_rs2))
+      fwd_rs2 = FWD_EX_MEM;
+    else if (wb_reg_wr && (wb_rd != 5'd0) && (wb_rd == ex_rs2))
+      fwd_rs2 = FWD_MEM_WB;
+    else
+      fwd_rs2 = FWD_NONE;
+  end
+
+  // ── Stall / flush logic ───────────────────────────────────────────────
+  always @(*) begin
+    stall_if  = 1'b0;
+    stall_id  = 1'b0;
+    stall_ex  = 1'b0;
+    flush_id  = 1'b0;
+    flush_ex  = 1'b0;
+    flush_mem = 1'b0;
+
+    // Load-use: freeze IF/ID, drop a bubble into EX.
+    if (load_use_hazard) begin
+      stall_if = 1'b1;
+      stall_id = 1'b1;
+      flush_ex = 1'b1;
+    end
+
+    // Control hazard (taken branch/jump or WFI flush): kill the wrongly
+    // fetched instructions in ID and EX. Flush wins over any stall above.
+    if (branch_redirect) begin
+      flush_id = 1'b1;
+      flush_ex = 1'b1;
+      stall_if = 1'b0;
+      stall_id = 1'b0;
+    end
   end
 
 endmodule

@@ -1,6 +1,6 @@
 # ============================================================================
 # Makefile — VCS + Verdi simulation / functional-verification flow
-#            for the BRV32P (RV32I) 5-stage pipelined SoC
+#            for the HiRiscy (RV32I) 5-stage pipelined SoC
 # ----------------------------------------------------------------------------
 # Typical usage (run from inside sim/):
 #   source ./setup_env.sh     # set VCS_HOME / VERDI_HOME / license first
@@ -17,9 +17,9 @@ FW_DIR    := ../tb
 FILELIST  := filelist.f
 
 # ---- Design ---------------------------------------------------------------
-TOP       := tb_brv32p_soc
+TOP       := tb_hiriscy_soc
 FW_HEX    := firmware.hex
-FSDB      := brv32p_soc.fsdb
+FSDB      := hiriscy_soc.fsdb
 
 # ---- Tools ----------------------------------------------------------------
 VCS       := vcs

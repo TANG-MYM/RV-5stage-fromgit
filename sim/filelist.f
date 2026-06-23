@@ -1,28 +1,29 @@
 // ============================================================================
-// filelist.f — BRV32P (RV32I) RTL + testbench source list for VCS / Verdi
+// filelist.f — HiRiscy (RV32I) RTL + testbench source list for VCS / Verdi
 // ----------------------------------------------------------------------------
 // Paths are relative to the sim/ directory. Run `make` from inside sim/.
 // Harvard structure: instruction ROM + data SRAM, no cache / no AXI.
 // ============================================================================
 
-// ---- Include directories (for `include "brv32p_defs.vh") ----
+// ---- Include directories (for `include "hiriscy_defs.vh") ----
 +incdir+../rtl/pkg
 +incdir+../rtl/core
 
-// ---- Core ----
-../rtl/core/alu.v
-../rtl/core/regfile.v
-../rtl/core/decoder.v
-../rtl/core/branch_predictor.v
-../rtl/core/hazard_unit.v
-../rtl/core/brv32p_core.v
+// ---- Core functional units ----
+../rtl/core/hiriscy_alu.v
+../rtl/core/hiriscy_rf.v
+../rtl/core/hiriscy_idu.v
+../rtl/core/hiriscy_ifu.v
+../rtl/core/hiriscy_exu.v
+../rtl/core/hiriscy_lsu.v
+../rtl/core/hiriscy_core.v
 
 // ---- Memories ----
-../rtl/mem/imem_rom.v
-../rtl/mem/dmem_sram.v
+../rtl/mem/hiriscy_imem.v
+../rtl/mem/hiriscy_dmem.v
 
 // ---- SoC top ----
-../rtl/brv32p_soc.v
+../rtl/hiriscy_soc.v
 
 // ---- Testbench ----
-../tb/tb_brv32p_soc.v
+../tb/tb_hiriscy_soc.v

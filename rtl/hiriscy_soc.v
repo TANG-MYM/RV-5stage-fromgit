@@ -1,12 +1,12 @@
 // ============================================================================
-// brv32p_soc.v — BRV32P SoC Top-Level (Harvard, no cache / no AXI)
+// hiriscy_soc.v — HiRiscy SoC Top-Level (Harvard, no cache / no AXI)
 // ----------------------------------------------------------------------------
 //   - Instruction memory : depth x 32-bit read-only ROM (combinational read)
 //   - Data memory        : 4 KB SRAM, simple 1-cycle-latency handshake
 //   - No caches, no AXI interconnect, no peripherals
 // ============================================================================
 
-module brv32p_soc #(
+module hiriscy_soc #(
   parameter IMEM_DEPTH = 1024,            // instruction words (depth x 32)
   parameter DMEM_DEPTH = 1024,            // data words (1024 x 32 = 4 KB)
   parameter INIT_FILE  = "firmware.hex"
@@ -30,13 +30,13 @@ module brv32p_soc #(
   // ── Core <-> Data memory ───────────────────────────────────────────────
   wire [31:0] core_dmem_addr, core_dmem_wdata, core_dmem_rdata;
   wire        core_dmem_rd,   core_dmem_wr,    core_dmem_ready;
-  wire [1:0]  core_dmem_width;
-  wire        core_dmem_sign_ext;
+  wire [1:0]  core_dmem_width;//计算的数据类型不同，位宽不同
+  wire        core_dmem_sign_ext;//标志是否进行符号扩展
 
   // ══════════════════════════════════════════════════════════════════════
   // CPU Core
   // ══════════════════════════════════════════════════════════════════════
-  brv32p_core u_core (
+  hiriscy_core u_core (
     .clk           (clk),
     .rst_n         (rst_n),
     .start_pause   (start_pause),
@@ -64,7 +64,7 @@ module brv32p_soc #(
   // ══════════════════════════════════════════════════════════════════════
   // Instruction memory (read-only ROM, depth x 32)
   // ══════════════════════════════════════════════════════════════════════
-  imem_rom #(
+  hiriscy_imem #(
     .DEPTH     (IMEM_DEPTH),
     .INIT_FILE (INIT_FILE)
   ) u_imem (
@@ -77,7 +77,7 @@ module brv32p_soc #(
   // ══════════════════════════════════════════════════════════════════════
   // Data memory (4 KB SRAM, simple handshake)
   // ══════════════════════════════════════════════════════════════════════
-  dmem_sram #(
+  hiriscy_dmem #(
     .DEPTH (DMEM_DEPTH)
   ) u_dmem (
     .clk      (clk),

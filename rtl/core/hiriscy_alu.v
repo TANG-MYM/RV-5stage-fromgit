@@ -1,8 +1,8 @@
 // ============================================================================
-// alu.v — 32-bit ALU for BRV32P
+// hiriscy_alu.v — 32-bit ALU
 // ============================================================================
 
-module alu (
+module hiriscy_alu (
   input  wire [31:0] a,
   input  wire [31:0] b,
   input  wire [3:0]  op,
@@ -10,7 +10,7 @@ module alu (
   output wire        zero
 );
 
-  `include "brv32p_defs.vh"
+  `include "hiriscy_defs.vh"
 
   always @(*) begin
     case (op)

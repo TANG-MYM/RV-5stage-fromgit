@@ -1,11 +1,11 @@
 // ============================================================================
-// imem_rom.v — Instruction Memory (register-file style, read-only)
+// hiriscy_imem.v — Instruction Memory (register-file style, read-only)
 // ----------------------------------------------------------------------------
 // DEPTH x 32-bit storage array, combinational (same-cycle) read, always ready.
 // Initialised from a hex image via $readmemh. Word-addressed by addr[*:2].
 // ============================================================================
 
-module imem_rom #(
+module hiriscy_imem #(
   parameter DEPTH     = 1024,            // number of 32-bit instruction words
   parameter INIT_FILE = "firmware.hex"
 )(

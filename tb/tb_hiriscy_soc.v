@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module tb_brv32p_soc;
+module tb_hiriscy_soc;
 
   reg         clk;
   reg         rst_n;
@@ -9,11 +9,12 @@ module tb_brv32p_soc;
   reg  [1:0]  configuration;
   wire [1:0]  core_status;
   wire [1:0]  exceptions;
+  wire [31:0] exceptions_pc;
 
   initial clk = 0;
   always #5 clk = ~clk;
 
-  brv32p_soc #(
+  hiriscy_soc #(
     .IMEM_DEPTH (1024),
     .DMEM_DEPTH (1024),
     .INIT_FILE  ("firmware.hex")
@@ -24,12 +25,12 @@ module tb_brv32p_soc;
     .start_pc      (start_pc),
     .configuration (configuration),
     .core_status   (core_status),
-    .exceptions    (exceptions)
+    .exceptions    (exceptions),
+    .exceptions_pc (exceptions_pc)
   );
 
   `define CORE    dut.u_core
-  `define RF      dut.u_core.u_regfile
-  `define BP      dut.u_core.u_bp
+  `define RF      dut.u_core.u_rf
   `define DMEM    dut.u_dmem
 
   function [31:0] get_reg;
@@ -54,21 +55,6 @@ module tb_brv32p_soc;
         pass_cnt = pass_cnt + 1;
       end else begin
         $display("[FAIL] #%0d %0s: got 0x%08h, expected 0x%08h", test_num, name, actual, expected);
-        fail_cnt = fail_cnt + 1;
-      end
-    end
-  endtask
-
-  task check_nonzero;
-    input [255:0] name;
-    input [31:0] actual;
-    begin
-      test_num = test_num + 1;
-      if (actual !== 32'd0) begin
-        $display("[PASS] #%0d %0s = 0x%08h (nonzero)", test_num, name, actual);
-        pass_cnt = pass_cnt + 1;
-      end else begin
-        $display("[FAIL] #%0d %0s: expected nonzero", test_num, name);
         fail_cnt = fail_cnt + 1;
       end
     end
@@ -100,11 +86,9 @@ module tb_brv32p_soc;
   endtask
 
   // ── Main Test ─────────────────────────────────────────────────────────
-  integer trained, bp_idx;
-
   initial begin
     $display("=============================================================");
-    $display("  BRV32P - 5-Stage Pipelined RV32I SoC Testbench");
+    $display("  HiRiscy - 5-Stage Pipelined RV32I SoC Testbench");
     $display("=============================================================");
 
     rst_n         = 0;
@@ -139,12 +123,12 @@ module tb_brv32p_soc;
     $display("\n--- Test: Data Forwarding ---");
     check("Forwarding: ADD x3 uses x1,x2 via forward", get_reg(3), 32'd52);
 
-    // ── Load/Store through D-cache ──────────────────────────────────
-    $display("\n--- Test: Load/Store (D-Cache) ---");
+    // ── Load/Store through data memory ──────────────────────────────
+    $display("\n--- Test: Load/Store (Data SRAM) ---");
     wait_reg(11, 32'd52, 50000);
-    check("SW+LW via D-cache: x11=52", get_reg(11), 32'd52);
+    check("SW+LW: x11=52", get_reg(11), 32'd52);
     wait_reg(12, 32'h55, 50000);
-    check("SB+LBU via D-cache: x12=0x55", get_reg(12), 32'h55);
+    check("SB+LBU: x12=0x55", get_reg(12), 32'h55);
 
     // ── Branch prediction ───────────────────────────────────────────
     $display("\n--- Test: Branches + Prediction ---");
@@ -184,21 +168,15 @@ module tb_brv32p_soc;
     start_pause = 1'b1;   // rising edge restarts from start_pc
     run(5);
 
-    // ── Branch Predictor state ──────────────────────────────────────
-    $display("\n--- Test: Branch Predictor ---");
-    begin
-      trained = 0;
-      for (bp_idx = 0; bp_idx < 256; bp_idx = bp_idx + 1)
-        if (`BP.bht[bp_idx] != 2'b01) trained = trained + 1;
-      if (trained > 0) begin
-        $display("[PASS] #%0d BHT: %0d entries trained", test_num+1, trained);
-        pass_cnt = pass_cnt + 1;
-      end else begin
-        $display("[FAIL] #%0d BHT: no entries trained", test_num+1);
-        fail_cnt = fail_cnt + 1;
-      end
-      test_num = test_num + 1;
-    end
+    // ── Static branch prediction ────────────────────────────────────
+    // The IFU uses a static "always not-taken" policy (no predictor state to
+    // inspect). Correctness of taken branches is already exercised by the
+    // arithmetic/loop results checked above (e.g. DMEM[0] = 52), which only
+    // produce the right value if mispredicted taken branches flush and redirect
+    // properly. Re-confirm the core is still running with no exceptions.
+    $display("\n--- Test: Static branch prediction (not-taken) ---");
+    check("core still running",  {30'b0, core_status}, 32'd0);
+    check("no exceptions raised", {30'b0, exceptions},  32'd0);
 
     // ── Summary ─────────────────────────────────────────────────────
     $display("\n=============================================================");
@@ -219,17 +197,17 @@ module tb_brv32p_soc;
   // VCD
   initial begin
     if ($test$plusargs("VCD")) begin
-      $dumpfile("brv32p_soc.vcd");
-      $dumpvars(0, tb_brv32p_soc);
+      $dumpfile("hiriscy_soc.vcd");
+      $dumpvars(0, tb_hiriscy_soc);
     end
   end
 
   // FSDB dump for Verdi (enabled by compiling with +define+FSDB, e.g. via VCS)
 `ifdef FSDB
   initial begin
-    $fsdbDumpfile("brv32p_soc.fsdb");
-    $fsdbDumpvars(0, tb_brv32p_soc, "+all");
-    $fsdbDumpMDA(0, tb_brv32p_soc);  // include memory / register arrays
+    $fsdbDumpfile("hiriscy_soc.fsdb");
+    $fsdbDumpvars(0, tb_hiriscy_soc, "+all");
+    $fsdbDumpMDA(0, tb_hiriscy_soc);  // include memory / register arrays
   end
 `endif
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// dmem_sram.v — Data SRAM (simple handshake, no AXI)
+// hiriscy_dmem.v — Data SRAM (simple handshake, no AXI)
 // ----------------------------------------------------------------------------
 // DEPTH x 32-bit synchronous SRAM (default 1024 words = 4 KB).
 // Access protocol: assert rd_en/wr_en with a stable address; data/ack arrive
@@ -9,7 +9,7 @@
 // single-cycle latency is modelled by a 1-bit ready toggle.
 // ============================================================================
 
-module dmem_sram #(
+module hiriscy_dmem #(
   parameter DEPTH = 1024  // 1024 x 32-bit = 4 KB
 )(
   input  wire        clk,
@@ -25,7 +25,7 @@ module dmem_sram #(
   output reg         ready
 );
 
-  `include "brv32p_defs.vh"
+  `include "hiriscy_defs.vh"
 
   localparam AW = $clog2(DEPTH);
 

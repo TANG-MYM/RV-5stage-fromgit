@@ -1,11 +1,11 @@
 // ============================================================================
-// regfile.v — 32x32 Register File for BRV32P
+// hiriscy_rf.v — 32x32 Register File (RF)
 // ============================================================================
 // Two read ports (combinational), one write port (synchronous).
-// x0 hardwired to zero. No internal forwarding (handled by hazard unit).
+// x0 hardwired to zero. No internal forwarding (handled by the IDU hazard logic).
 // ============================================================================
 
-module regfile (
+module hiriscy_rf (
   input  wire        clk,
   input  wire        rst_n,
 
