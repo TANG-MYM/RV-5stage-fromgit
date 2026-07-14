@@ -9,6 +9,10 @@
 +incdir+../rtl/pkg
 +incdir+../rtl/core
 
+// ---- Generic library cells (DFF primitives) ----
+../rtl/lib/hiriscy_dff.v
+../rtl/lib/hiriscy_dff_en.v
+
 // ---- Core functional units ----
 ../rtl/core/hiriscy_alu.v
 ../rtl/core/hiriscy_rf.v

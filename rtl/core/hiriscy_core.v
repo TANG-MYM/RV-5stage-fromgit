@@ -80,25 +80,25 @@ module hiriscy_core (
   // ════════════════════════════════════════════════════════════════════
   // Run / Pause / Restart control + exception halt + WFI
   // ════════════════════════════════════════════════════════════════════
-  reg         start_pause_d;
-  reg         halted;          // set when an unmasked exception is detected检测到未被屏蔽的异常后置 1，CPU 停机
-  reg  [1:0]  exceptions_r;    // latched exception cause
-  reg  [31:0] exceptions_pc_r; // latched PC of the faulting instruction
-  reg         wfi_active;      // WFI in flight: draining older instrs, fetch off
-  reg         wfi_idle;        // WFI retired -> core parked in IDLE
+  wire        start_pause_d;
+  wire        halted;          // set when an unmasked exception is detected检测到未被屏蔽的异常后置 1，CPU 停机
+  wire [1:0]  exceptions_r;    // latched exception cause
+  wire [31:0] exceptions_pc_r; // latched PC of the faulting instruction
+  wire        wfi_active;      // WFI in flight: draining older instrs, fetch off
+  wire        wfi_idle;        // WFI retired -> core parked in IDLE
 
-  // Pipeline registers (declared up-front so always-blocks can reference them)
-  reg  [31:0]         pc_if;
-  reg  [31:0]         pc_id, instr_id;
-  reg  [31:0]         pc_ex, rs1_data_ex, rs2_data_ex, imm_ex;
-  reg  [4:0]          rs1_addr_ex, rs2_addr_ex, rd_addr_ex;
-  reg  [`CTRL_W-1:0]  ctrl_ex;
-  reg  [31:0]         ex_result_mem, rs2_data_mem;
-  reg  [4:0]          rd_addr_mem;
-  reg  [`CTRL_W-1:0]  ctrl_mem;
-  reg  [31:0]         mem_result_wb;
-  reg  [4:0]          rd_addr_wb;
-  reg  [`CTRL_W-1:0]  ctrl_wb;
+  // Pipeline registers (DFF .q outputs; driven by hiriscy_dff/-_en instances)
+  wire [31:0]         pc_if;
+  wire [31:0]         pc_id, instr_id;
+  wire [31:0]         pc_ex, rs1_data_ex, rs2_data_ex, imm_ex;
+  wire [4:0]          rs1_addr_ex, rs2_addr_ex, rd_addr_ex;
+  wire [`CTRL_W-1:0]  ctrl_ex;
+  wire [31:0]         ex_result_mem, rs2_data_mem;
+  wire [4:0]          rd_addr_mem;
+  wire [`CTRL_W-1:0]  ctrl_mem;
+  wire [31:0]         mem_result_wb;
+  wire [4:0]          rd_addr_wb;
+  wire [`CTRL_W-1:0]  ctrl_wb;
 
   // Inter-unit datapath wires
   wire [31:0] pc_next;
@@ -114,13 +114,9 @@ module hiriscy_core (
   wire [31:0] mem_result;
 
   // Writeback (WB) mux + forwarding taps
-  reg  [31:0] wb_rd_data;
   wire        wb_wr_en  = ctrl_wb[`CTRL_REG_WR];
   wire [4:0]  wb_rd_addr = rd_addr_wb;
-
-  always @(*) begin
-    wb_rd_data = mem_result_wb;   // WB_ALU/WB_PC4 fold into mem_result via EX
-  end
+  wire [31:0] wb_rd_data = mem_result_wb;  // WB_ALU/WB_PC4 fold into mem_result via EX
 
   wire restart = start_pause & ~start_pause_d;        // rising edge -> (re)start
   wire run     = start_pause & ~halted & ~wfi_idle;   // advance only when running
@@ -129,48 +125,55 @@ module hiriscy_core (
   // instructions in ID/EX so they never commit.
   wire wfi_flush = ctrl_ex[`CTRL_WFI] | wfi_active;
 
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) start_pause_d <= 1'b0;
-    else        start_pause_d <= start_pause;
-  end
+  hiriscy_dff #(.WIDTH(1)) u_start_pause_d (
+    .clk (clk), .rst_n (rst_n), .rst_val (1'b0),
+    .d   (start_pause), .q (start_pause_d)
+  );
 
-  // Exception halt latch
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      halted          <= 1'b0;
-      exceptions_r    <= 2'b0;
-      exceptions_pc_r <= 32'b0;
-    end else if (restart) begin
-      halted          <= 1'b0;
-      exceptions_r    <= 2'b0;
-      exceptions_pc_r <= 32'b0;
-    end else if (run && !halted && any_exc) begin//any_exc代表检测到异常
-      halted          <= 1'b1;
-      exceptions_r    <= exceptions_next;
-      exceptions_pc_r <= pc_ex;          // EX-stage PC == faulting instruction PC
-    end
-  end
+  // ── Exception halt latch ──────────────────────────────────────────────
+  // Set on the first unmasked exception (any_exc) while running; cleared by a
+  // Start pulse (restart). Enable covers both events; d selects the value.
+  wire        exc_set   = run & ~halted & any_exc;   // detect an exception
+  wire        exc_upd   = restart | exc_set;         // latch changes this cycle
+  wire        halted_d  = restart ? 1'b0 : 1'b1;
+  wire [1:0]  exc_r_d   = restart ? 2'b0 : exceptions_next;
+  wire [31:0] exc_pc_d  = restart ? 32'b0 : pc_ex;   // EX PC == faulting PC
 
-  // WFI control:
+  hiriscy_dff_en #(.WIDTH(1)) u_halted (
+    .clk (clk), .rst_n (rst_n), .en (exc_upd), .rst_val (1'b0),
+    .d   (halted_d), .q (halted)
+  );
+  hiriscy_dff_en #(.WIDTH(2)) u_exceptions_r (
+    .clk (clk), .rst_n (rst_n), .en (exc_upd), .rst_val (2'b0),
+    .d   (exc_r_d), .q (exceptions_r)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_exceptions_pc_r (
+    .clk (clk), .rst_n (rst_n), .en (exc_upd), .rst_val (32'b0),
+    .d   (exc_pc_d), .q (exceptions_pc_r)
+  );
+
+  // ── WFI control ───────────────────────────────────────────────────────
   //  1. WFI reaches EX  -> wfi_active: stop fetch, flush younger, drain older.
   //  2. WFI reaches WB  -> retires; core enters wfi_idle (IDLE).
   //  3. A Start pulse (restart) clears the state and re-fetches from start_pc.
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      wfi_active <= 1'b0;
-      wfi_idle   <= 1'b0;
-    end else if (restart) begin
-      wfi_active <= 1'b0;
-      wfi_idle   <= 1'b0;
-    end else if (run) begin
-      if (ctrl_wb[`CTRL_WFI]) begin           // WFI retiring in WB
-        wfi_active <= 1'b0;
-        wfi_idle   <= 1'b1;
-      end else if (ctrl_ex[`CTRL_WFI]) begin  // WFI reached EX
-        wfi_active <= 1'b1;
-      end
-    end
-  end
+  wire wfi_wb = ctrl_wb[`CTRL_WFI];
+  wire wfi_ex = ctrl_ex[`CTRL_WFI];
+
+  wire wfi_active_d = restart ? 1'b0 :
+                      run     ? (wfi_wb ? 1'b0 : (wfi_ex ? 1'b1 : wfi_active))
+                              : wfi_active;
+  wire wfi_idle_d   = restart ? 1'b0 :
+                      run     ? (wfi_wb ? 1'b1 : wfi_idle)
+                              : wfi_idle;
+
+  hiriscy_dff #(.WIDTH(1)) u_wfi_active (
+    .clk (clk), .rst_n (rst_n), .rst_val (1'b0),
+    .d   (wfi_active_d), .q (wfi_active)
+  );
+  hiriscy_dff #(.WIDTH(1)) u_wfi_idle (
+    .clk (clk), .rst_n (rst_n), .rst_val (1'b0),
+    .d   (wfi_idle_d), .q (wfi_idle)
+  );
 
   assign exceptions     = exceptions_r;
   assign exceptions_pc  = exceptions_pc_r;
@@ -180,15 +183,15 @@ module hiriscy_core (
   // ════════════════════════════════════════════════════════════════════
   // IF — PC register + fetch unit (static not-taken prediction)
   // ════════════════════════════════════════════════════════════════════
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
-      pc_if <= {20'b0, start_pc};
-    else if (restart)
-      pc_if <= {20'b0, start_pc};
-    else if (run && !stall_if && !mem_stall && !wfi_active)
-      pc_if <= pc_next;
-    // else: paused / stalled / WFI -> hold (stop fetch)
-  end
+  //   advance when running and not stalled/parked; restart reloads start_pc;
+  //   otherwise (paused / stalled / WFI) hold -> stop fetch.
+  wire        pc_if_en = restart | (run & ~stall_if & ~mem_stall & ~wfi_active);
+  wire [31:0] pc_if_d  = restart ? {20'b0, start_pc} : pc_next;
+
+  hiriscy_dff_en #(.WIDTH(32)) u_pc_if (
+    .clk (clk), .rst_n (rst_n), .en (pc_if_en),
+    .rst_val ({20'b0, start_pc}), .d (pc_if_d), .q (pc_if)
+  );
 
   hiriscy_ifu u_ifu (
     .pc_if                (pc_if),
@@ -202,21 +205,21 @@ module hiriscy_core (
   );
 
   // ── IF/ID Pipeline Register ───────────────────────────────────────────
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || restart) begin
-      pc_id    <= 32'b0;
-      instr_id <= 32'h0000_0013; // NOP
-    end else if (run) begin
-      if (flush_id) begin
-        pc_id    <= 32'b0;
-        instr_id <= 32'h0000_0013; // NOP
-      end else if (!stall_id && !mem_stall) begin
-        pc_id    <= pc_if;
-        instr_id <= imem_rdata;
-      end
-    end
-    // else: paused -> hold
-  end
+  //   restart/flush inject a NOP; otherwise capture the fetched instruction
+  //   when advancing; hold when paused or stalled.
+  wire        ifid_nop = restart | flush_id;
+  wire        ifid_en  = restart | (run & (flush_id | (~stall_id & ~mem_stall)));
+  wire [31:0] pc_id_d    = ifid_nop ? 32'b0        : pc_if;
+  wire [31:0] instr_id_d = ifid_nop ? 32'h0000_0013 : imem_rdata; // NOP
+
+  hiriscy_dff_en #(.WIDTH(32)) u_pc_id (
+    .clk (clk), .rst_n (rst_n), .en (ifid_en),
+    .rst_val (32'b0), .d (pc_id_d), .q (pc_id)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_instr_id (
+    .clk (clk), .rst_n (rst_n), .en (ifid_en),
+    .rst_val (32'h0000_0013), .d (instr_id_d), .q (instr_id)
+  );
 
   // ════════════════════════════════════════════════════════════════════
   // ID — Decode unit (+ integrated hazard/forwarding) + register file
@@ -264,39 +267,42 @@ module hiriscy_core (
   );
 
   // ── ID/EX Pipeline Register ───────────────────────────────────────────
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || restart) begin
-      ctrl_ex       <= {`CTRL_W{1'b0}};
-      pc_ex         <= 32'b0;
-      rs1_data_ex   <= 32'b0;
-      rs2_data_ex   <= 32'b0;
-      imm_ex        <= 32'b0;
-      rs1_addr_ex   <= 5'b0;
-      rs2_addr_ex   <= 5'b0;
-      rd_addr_ex    <= 5'b0;
-    end else if (run) begin
-      if (flush_ex) begin
-        ctrl_ex       <= {`CTRL_W{1'b0}};
-        pc_ex         <= 32'b0;
-        rs1_data_ex   <= 32'b0;
-        rs2_data_ex   <= 32'b0;
-        imm_ex        <= 32'b0;
-        rs1_addr_ex   <= 5'b0;
-        rs2_addr_ex   <= 5'b0;
-        rd_addr_ex    <= 5'b0;
-      end else if (!stall_ex && !mem_stall) begin
-        ctrl_ex       <= ctrl_id;
-        pc_ex         <= pc_id;
-        rs1_data_ex   <= rs1_data_raw;
-        rs2_data_ex   <= rs2_data_raw;
-        imm_ex        <= imm_id;
-        rs1_addr_ex   <= rs1_addr_id;
-        rs2_addr_ex   <= rs2_addr_id;
-        rd_addr_ex    <= rd_addr_id;
-      end
-    end
-    // else: paused -> hold
-  end
+  //   restart/flush inject a bubble (all-zero ctrl); capture when advancing.
+  wire idex_nop = restart | flush_ex;
+  wire idex_en  = restart | (run & (flush_ex | (~stall_ex & ~mem_stall)));
+
+  hiriscy_dff_en #(.WIDTH(`CTRL_W)) u_ctrl_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val ({`CTRL_W{1'b0}}),
+    .d   (idex_nop ? {`CTRL_W{1'b0}} : ctrl_id), .q (ctrl_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_pc_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (32'b0),
+    .d   (idex_nop ? 32'b0 : pc_id), .q (pc_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_rs1_data_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (32'b0),
+    .d   (idex_nop ? 32'b0 : rs1_data_raw), .q (rs1_data_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_rs2_data_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (32'b0),
+    .d   (idex_nop ? 32'b0 : rs2_data_raw), .q (rs2_data_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_imm_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (32'b0),
+    .d   (idex_nop ? 32'b0 : imm_id), .q (imm_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rs1_addr_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (5'b0),
+    .d   (idex_nop ? 5'b0 : rs1_addr_id), .q (rs1_addr_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rs2_addr_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (5'b0),
+    .d   (idex_nop ? 5'b0 : rs2_addr_id), .q (rs2_addr_ex)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rd_addr_ex (
+    .clk (clk), .rst_n (rst_n), .en (idex_en), .rst_val (5'b0),
+    .d   (idex_nop ? 5'b0 : rd_addr_id), .q (rd_addr_ex)
+  );
 
   // ════════════════════════════════════════════════════════════════════
   // EX — Execute unit (forwarding + ALU + branch/exception)
@@ -321,27 +327,25 @@ module hiriscy_core (
   );
 
   // ── EX/MEM Pipeline Register ──────────────────────────────────────────
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || restart) begin
-      ctrl_mem      <= {`CTRL_W{1'b0}};
-      ex_result_mem <= 32'b0;
-      rs2_data_mem  <= 32'b0;
-      rd_addr_mem   <= 5'b0;
-    end else if (run) begin
-      if (flush_mem) begin
-        ctrl_mem      <= {`CTRL_W{1'b0}};
-        ex_result_mem <= 32'b0;
-        rs2_data_mem  <= 32'b0;
-        rd_addr_mem   <= 5'b0;
-      end else if (!mem_stall) begin
-        ctrl_mem      <= ctrl_ex;
-        ex_result_mem <= ex_result;
-        rs2_data_mem  <= rs2_fwd;
-        rd_addr_mem   <= rd_addr_ex;
-      end
-    end
-    // else: paused -> hold
-  end
+  wire exmem_nop = restart | flush_mem;
+  wire exmem_en  = restart | (run & (flush_mem | ~mem_stall));
+
+  hiriscy_dff_en #(.WIDTH(`CTRL_W)) u_ctrl_mem (
+    .clk (clk), .rst_n (rst_n), .en (exmem_en), .rst_val ({`CTRL_W{1'b0}}),
+    .d   (exmem_nop ? {`CTRL_W{1'b0}} : ctrl_ex), .q (ctrl_mem)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_ex_result_mem (
+    .clk (clk), .rst_n (rst_n), .en (exmem_en), .rst_val (32'b0),
+    .d   (exmem_nop ? 32'b0 : ex_result), .q (ex_result_mem)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_rs2_data_mem (
+    .clk (clk), .rst_n (rst_n), .en (exmem_en), .rst_val (32'b0),
+    .d   (exmem_nop ? 32'b0 : rs2_fwd), .q (rs2_data_mem)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rd_addr_mem (
+    .clk (clk), .rst_n (rst_n), .en (exmem_en), .rst_val (5'b0),
+    .d   (exmem_nop ? 5'b0 : rd_addr_ex), .q (rd_addr_mem)
+  );
 
   // ════════════════════════════════════════════════════════════════════
   // MEM — Load/Store unit
@@ -362,17 +366,20 @@ module hiriscy_core (
   );
 
   // ── MEM/WB Pipeline Register ──────────────────────────────────────────
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n || restart) begin
-      ctrl_wb       <= {`CTRL_W{1'b0}};
-      mem_result_wb <= 32'b0;
-      rd_addr_wb    <= 5'b0;
-    end else if (run && !mem_stall) begin
-      ctrl_wb       <= ctrl_mem;
-      mem_result_wb <= mem_result;
-      rd_addr_wb    <= rd_addr_mem;
-    end
-    // else: paused -> hold
-  end
+  //   restart clears to a bubble; otherwise advance when running & not stalled.
+  wire memwb_en = restart | (run & ~mem_stall);
+
+  hiriscy_dff_en #(.WIDTH(`CTRL_W)) u_ctrl_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val ({`CTRL_W{1'b0}}),
+    .d   (restart ? {`CTRL_W{1'b0}} : ctrl_mem), .q (ctrl_wb)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_mem_result_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (32'b0),
+    .d   (restart ? 32'b0 : mem_result), .q (mem_result_wb)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rd_addr_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (5'b0),
+    .d   (restart ? 5'b0 : rd_addr_mem), .q (rd_addr_wb)
+  );
 
 endmodule

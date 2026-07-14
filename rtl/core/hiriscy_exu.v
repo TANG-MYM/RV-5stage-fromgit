@@ -29,7 +29,7 @@ module hiriscy_exu (
   input  wire [1:0]           configuration,
 
   // Datapath results to EX/MEM register
-  output reg  [31:0]          ex_result,
+  output wire [31:0]          ex_result,
   output wire [31:0]          store_data,    // forwarded rs2 (store data)
 
   // Branch resolution (to IFU next-PC + hazard)
@@ -44,19 +44,10 @@ module hiriscy_exu (
   `include "hiriscy_defs.vh"
 
   // ── Forwarding MUXes ──────────────────────────────────────────────────
-  reg [31:0] rs1_fwd, rs2_fwd;
-  always @(*) begin
-    case (fwd_rs1)
-      FWD_EX_MEM:  rs1_fwd = fwd_ex_mem_data;
-      FWD_MEM_WB:  rs1_fwd = fwd_mem_wb_data;
-      default:     rs1_fwd = rs1_data_ex;
-    endcase
-    case (fwd_rs2)
-      FWD_EX_MEM:  rs2_fwd = fwd_ex_mem_data;
-      FWD_MEM_WB:  rs2_fwd = fwd_mem_wb_data;
-      default:     rs2_fwd = rs2_data_ex;
-    endcase
-  end
+  wire [31:0] rs1_fwd = (fwd_rs1 == FWD_EX_MEM) ? fwd_ex_mem_data :
+                        (fwd_rs1 == FWD_MEM_WB) ? fwd_mem_wb_data : rs1_data_ex;
+  wire [31:0] rs2_fwd = (fwd_rs2 == FWD_EX_MEM) ? fwd_ex_mem_data :
+                        (fwd_rs2 == FWD_MEM_WB) ? fwd_mem_wb_data : rs2_data_ex;
 
   assign store_data = rs2_fwd;
 
@@ -75,23 +66,16 @@ module hiriscy_exu (
   );
 
   // ── Branch resolution ─────────────────────────────────────────────────
-  reg  branch_taken_ex;
-  wire [31:0] branch_target_computed;
+  wire [2:0] br_type = ctrl_ex[`CTRL_BR_TYPE];
+  wire branch_taken_ex =
+    (br_type == BR_EQ)  ? (rs1_fwd == rs2_fwd)                 :
+    (br_type == BR_NE)  ? (rs1_fwd != rs2_fwd)                 :
+    (br_type == BR_LT)  ? ($signed(rs1_fwd) <  $signed(rs2_fwd)) :
+    (br_type == BR_GE)  ? ($signed(rs1_fwd) >= $signed(rs2_fwd)) :
+    (br_type == BR_LTU) ? (rs1_fwd <  rs2_fwd)                 :
+    (br_type == BR_GEU) ? (rs1_fwd >= rs2_fwd)                 : 1'b0;
 
-  always @(*) begin
-    branch_taken_ex = 1'b0;
-    case (ctrl_ex[`CTRL_BR_TYPE])
-      BR_EQ:  branch_taken_ex = (rs1_fwd == rs2_fwd);
-      BR_NE:  branch_taken_ex = (rs1_fwd != rs2_fwd);
-      BR_LT:  branch_taken_ex = ($signed(rs1_fwd) < $signed(rs2_fwd));
-      BR_GE:  branch_taken_ex = ($signed(rs1_fwd) >= $signed(rs2_fwd));
-      BR_LTU: branch_taken_ex = (rs1_fwd < rs2_fwd);
-      BR_GEU: branch_taken_ex = (rs1_fwd >= rs2_fwd);
-      default: branch_taken_ex = 1'b0;
-    endcase
-  end
-
-  assign branch_target_computed = ctrl_ex[`CTRL_JALR] ?
+  wire [31:0] branch_target_computed = ctrl_ex[`CTRL_JALR] ?
     {alu_result_ex[31:1], 1'b0} : (pc_ex + imm_ex);
 
   // ── Mispredict detection ──────────────────────────────────────────────
@@ -126,12 +110,9 @@ module hiriscy_exu (
   assign any_exc         = exc_misalign | exc_illegal;
 
   // ── EX result select ──────────────────────────────────────────────────
-  always @(*) begin
-    case (ctrl_ex[`CTRL_WB_SEL])
-      WB_ALU:    ex_result = alu_result_ex;
-      WB_PC4:    ex_result = pc_ex + 32'd4;
-      default:   ex_result = alu_result_ex;
-    endcase
-  end
+  // WB_PC4 -> return address (PC+4); everything else (WB_ALU / WB_MEM path)
+  // carries the ALU result forward (the LSU substitutes load data in MEM).
+  assign ex_result = (ctrl_ex[`CTRL_WB_SEL] == WB_PC4) ? (pc_ex + 32'd4)
+                                                       : alu_result_ex;
 
 endmodule

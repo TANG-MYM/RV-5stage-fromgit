@@ -31,18 +31,13 @@ module hiriscy_ifu (
   input  wire        wfi_idle,
 
   // Outputs
-  output reg  [31:0] pc_next,
+  output wire [31:0] pc_next,
   output wire [31:0] imem_addr,
   output wire        imem_rd
 );
 
   // Static not-taken prediction: take the sequential path unless EX corrects us.
-  always @(*) begin
-    if (branch_mispredict_ex)
-      pc_next = branch_target_ex;
-    else
-      pc_next = pc_if + 32'd4;
-  end
+  assign pc_next   = branch_mispredict_ex ? branch_target_ex : (pc_if + 32'd4);
 
   assign imem_addr = pc_if;
   assign imem_rd   = ~(wfi_active | wfi_idle);   // WFI stops instruction fetch

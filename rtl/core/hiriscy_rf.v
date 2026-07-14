@@ -1,8 +1,11 @@
 // ============================================================================
 // hiriscy_rf.v — 32x32 Register File (RF)
 // ============================================================================
-// Two read ports (combinational), one write port (synchronous).
-// x0 hardwired to zero. No internal forwarding (handled by the IDU hazard logic).
+// Two read ports (combinational assign), one write port. x0 is hardwired to
+// zero (no physical register). No internal forwarding (handled by the IDU
+// hazard logic). State is realised with hiriscy_dff_en cells, one per x1..x31;
+// each register's enable is its own write-select, so no clocked always-block
+// lives here.
 // ============================================================================
 
 module hiriscy_rf (
@@ -21,23 +24,27 @@ module hiriscy_rf (
   input  wire [31:0] rd_data
 );
 
-  reg [31:0] regs [1:31];
+  wire [31:0] regs [1:31];
 
-  // Read port A
-  assign rs1_data = (rs1_addr == 5'd0) ? 32'd0 : regs[rs1_addr];
-
-  // Read port B
-  assign rs2_data = (rs2_addr == 5'd0) ? 32'd0 : regs[rs2_addr];
-
-  // Write
-  integer i;
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      for (i = 1; i < 32; i = i + 1)
-        regs[i] <= 32'd0;
-    end else if (wr_en && rd_addr != 5'd0) begin
-      regs[rd_addr] <= rd_data;
+  // ── Write port: one enabled DFF per architectural register ────────────
+  // x0 has no register (gi starts at 1); a write to x0 matches no enable and
+  // is therefore discarded, satisfying the RISC-V "x0 is constant 0" rule.
+  genvar gi;
+  generate
+    for (gi = 1; gi < 32; gi = gi + 1) begin : g_reg
+      hiriscy_dff_en #(.WIDTH(32)) u_reg (
+        .clk     (clk),
+        .rst_n   (rst_n),
+        .en      (wr_en & (rd_addr == gi[4:0])),
+        .rst_val (32'b0),
+        .d       (rd_data),
+        .q       (regs[gi])
+      );
     end
-  end
+  endgenerate
+
+  // ── Read ports (x0 reads as 0) ────────────────────────────────────────
+  assign rs1_data = (rs1_addr == 5'd0) ? 32'd0 : regs[rs1_addr];
+  assign rs2_data = (rs2_addr == 5'd0) ? 32'd0 : regs[rs2_addr];
 
 endmodule

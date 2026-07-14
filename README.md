@@ -40,6 +40,15 @@ The SoC top interface exposes:
 > implemented. `WFI` is the only SYSTEM instruction; it drains the pipeline,
 > stops fetch, and parks the core in IDLE until the next Start pulse.
 
+### Coding style
+
+All combinational logic is written with continuous `assign` statements (and
+instantiated combinational sub-modules); all state is realised by instantiating
+the flip-flop primitives in `rtl/lib/` (`hiriscy_dff`, `hiriscy_dff_en`). Clocked
+`always` blocks therefore exist only inside those two primitives and inside the
+behavioural memory arrays (`hiriscy_imem` ROM, `hiriscy_dmem` SRAM), which model
+memory macros rather than discrete flip-flops.
+
 ## Directory Structure
 
 ```text
@@ -47,6 +56,7 @@ The SoC top interface exposes:
 ├── rtl/
 │   ├── hiriscy_soc.v
 │   ├── core/        # hiriscy_core + ifu/idu/exu/lsu/alu/rf
+│   ├── lib/         # hiriscy_dff / hiriscy_dff_en (flip-flop primitives)
 │   ├── mem/         # hiriscy_imem / hiriscy_dmem
 │   └── pkg/         # hiriscy_defs.vh
 ├── tb/
