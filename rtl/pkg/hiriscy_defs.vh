@@ -74,10 +74,11 @@ localparam [2:0] BR_GE   = 3'b100;
 localparam [2:0] BR_LTU  = 3'b101;
 localparam [2:0] BR_GEU  = 3'b110;
 
-// ── Forward select ───────────────────────────────────────────────────
+// ── Forward select (3-stage forwarding at ID: EX/MEM/WB) ────────────
 localparam [1:0] FWD_NONE   = 2'b00;
-localparam [1:0] FWD_EX_MEM = 2'b01;
-localparam [1:0] FWD_MEM_WB = 2'b10;
+localparam [1:0] FWD_EX     = 2'b01;   // from EX stage (combinational ALU output)
+localparam [1:0] FWD_MEM    = 2'b10;   // from MEM stage (LSU output)
+localparam [1:0] FWD_WB     = 2'b11;   // from WB stage (MEM/WB register)
 
 // ── Memory Map ───────────────────────────────────────────────────────
 localparam [31:0] RESET_VECTOR = 32'h0000_0000;

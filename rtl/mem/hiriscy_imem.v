@@ -1,18 +1,22 @@
 // ============================================================================
 // hiriscy_imem.v — Instruction Memory (register-file style, read-only)
 // ----------------------------------------------------------------------------
-// DEPTH x 32-bit storage array, combinational (same-cycle) read, always ready.
-// Initialised from a hex image via $readmemh. Word-addressed by addr[*:2].
+// Unified interface: clk, addr, we, ce, we_data, rd_data
+// 32-bit data width, combinational (same-cycle) read
 // ============================================================================
 
 module hiriscy_imem #(
-  parameter DEPTH     = 1024,            // number of 32-bit instruction words
+  parameter DEPTH     = 1024,
   parameter INIT_FILE = "firmware.hex"
 )(
+  input  wire        clk,
+  input  wire        rst_n,
+
   input  wire [31:0] addr,
-  input  wire        rd_en,              // ignored: ROM always returns data
-  output wire [31:0] rdata,
-  output wire        ready
+  input  wire        ce,
+  input  wire        we,
+  input  wire [31:0] we_data,
+  output wire [31:0] rd_data
 );
 
   localparam AW = $clog2(DEPTH);
@@ -22,13 +26,16 @@ module hiriscy_imem #(
   integer i;
   initial begin
     for (i = 0; i < DEPTH; i = i + 1)
-      mem[i] = 32'h0000_0013;  // NOP (addi x0,x0,0)
+      mem[i] = 32'h0000_0013;
     if (INIT_FILE != "")
       $readmemh(INIT_FILE, mem);
   end
 
-  // Combinational (same-cycle) read, like a register file.
-  assign rdata = mem[addr[AW+1:2]];
-  assign ready = 1'b1;
+  always @(posedge clk) begin
+    if (ce & we)
+      mem[addr[AW+1:2]] <= we_data;
+  end
+
+  assign rd_data = mem[addr[AW+1:2]];
 
 endmodule

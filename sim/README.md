@@ -1,47 +1,134 @@
-# VCS + Verdi 仿真 / 功能验证流程
+# HiRiscy SoC Simulation Environment (VCS + Verdi)
 
-本目录提供基于 **Synopsys VCS**（编译/仿真）与 **Verdi**（波形 & 源码调试）的
-验证环境，针对 HiRiscy（**RV32I**）5 级流水线 SoC。
+## Directory Structure
 
-## 目录内容
+```
+sim/
+├── Makefile          — VCS/Verdi build & run flow
+├── filelist.f        — RTL + testbench source list
+├── setup_env.sh      — environment setup (VCS_HOME, VERDI_HOME, license)
+└── README.md         — this file
 
-| 文件 | 作用 |
-|------|------|
-| `filelist.f`   | RTL + testbench 源文件清单（含 `+incdir`），供 VCS `-f` 使用 |
-| `Makefile`     | VCS 编译、运行、Verdi 调试、清理等目标 |
-| `setup_env.sh` | VCS_HOME / VERDI_HOME / license 环境变量模板（需自行填写路径） |
+tb/
+├── tb_hiriscy_soc.v              — SoC testbench (+TEST= selection)
+├── firmware.hex                  — default functional firmware
+├── firmware_basic.hex            — basic functional test (copy of firmware.hex)
+├── firmware_exc_illegal.hex      — illegal instruction exception test
+├── firmware_exc_branch_misalign.hex — branch target misalign test
+├── firmware_exc_priority.hex     — illegal + fetch misalign priority test
+└── firmware_exc_fetch_misalign.hex — (uses start_pc=1, same as basic hex)
+```
 
-## 使用步骤
+## Quick Start
 
 ```bash
 cd sim
+source ./setup_env.sh     # set VCS_HOME / VERDI_HOME / license
 
-# 1) 配置工具环境（先编辑 setup_env.sh 里的路径和 license）
-source ./setup_env.sh
-
-# 2) 编译（默认开启 FSDB 波形 + KDB 源码调试）
-make comp
-
-# 3) 运行仿真（自动把 ../tb/firmware.hex 拷到当前目录）
-make run
-
-# 4) 用 Verdi 打开波形做功能验证
-make verdi
-
-# 5) 清理所有生成物
-make clean
+make comp                 # compile
+make run                  # run default functional test (firmware.hex)
+make verdi                # open waveform in Verdi
 ```
 
-## 说明
+## Running Specific Tests
 
-- **波形**：编译时通过 `+define+FSDB` 打开 testbench 内的 `$fsdbDump*`，
-  仿真后生成 `hiriscy_soc.fsdb`。`make verdi` 会同时加载 `simv.daidir`(KDB)，
-  支持源码级调试。
-- **VCD（可选）**：testbench 仍保留 VCD 通路，运行时加 plusarg 即可：
-  `make run RUN_ARGS="+VCD"`，生成 `hiriscy_soc.vcd`。
-- **固件**：SoC 通过 `$readmemh("firmware.hex", ...)` 加载程序，Makefile 会自动
-  把 `../tb/firmware.hex` 拷贝到运行目录。
-- **FSDB PLI**：当 `VERDI_HOME` 已设置时，Makefile 会自动链接
-  `$VERDI_HOME/share/PLI/VCS/$PLATFORM/{novas.tab,pli.a}`。如平台目录不是
-  `LINUX64`，在 `setup_env.sh` 里修改 `PLATFORM`。
-- 顶层模块为 `tb_hiriscy_soc`；仿真结束会打印 `PASSED / FAILED` 统计。
+The testbench supports `+TEST=<name>` to select a test scenario:
+
+```bash
+make run TEST=basic                   # basic ALU / forwarding / load-store / branch
+make run TEST=exc_illegal             # illegal instruction exception
+make run TEST=exc_branch_misalign     # branch target misalign exception
+make run TEST=exc_priority            # exception priority (illegal > fetch misalign)
+make run TEST=exc_fetch_misalign      # fetch PC misalign (start_pc=1)
+```
+
+## Run All Tests
+
+```bash
+make test_all
+```
+
+This runs every test scenario, logs output to `test_results.log`, and prints a
+summary of any failures.
+
+## Test Scenarios
+
+### 1. `basic` — Functional Test
+Exercises ALU operations (ADD, SUB, AND, OR, XOR, SLL, SRL, SLT), data
+forwarding (EX→MEM→WB→RF), load-use stall, store-then-load, branch taken,
+JAL, and a countdown loop. Verifies register file and DMEM contents.
+
+### 2. `exc_illegal` — Illegal Instruction Exception
+```
+0x00: lui  x10, 0x10000      ; DMEM base
+0x04: addi x1,  x0, 42       ; x1 = 42      (retires)
+0x08: addi x2,  x0, 10       ; x2 = 10      (retires)
+0x0C: add  x3,  x1, x2       ; x3 = 52      (retires, forwarding)
+0x10: sw   x3,  0(x10)       ; DMEM[0]=52   (retires, older store)
+0x14: 0x00000000              ; illegal opcode → exception
+0x18: addi x5,  x0, 99       ; must NOT execute
+```
+Expected: `exceptions[1]=1` (illegal), `exceptions_pc=0x14`, core halts.
+Older instructions (x1, x2, x3, DMEM[0]) retire; younger (x5) does not.
+
+### 3. `exc_branch_misalign` — Branch Target Misalign
+```
+0x00: addi x1, x0, 42        ; x1 = 42      (retires)
+0x04: addi x2, x0, 10        ; x2 = 10      (retires)
+0x08: beq  x0, x0, +2        ; target=0x0A, misaligned → exception
+0x0C: addi x5, x0, 99        ; must NOT execute (flushed)
+```
+Expected: `exceptions[0]=1` (misalign), `exceptions_pc=0x08`, core halts.
+
+### 4. `exc_priority` — Exception Priority
+Illegal instruction (detected in ID, older) and fetch misalign (detected
+in IF, younger) occur simultaneously. The older exception (illegal) must
+be reported.
+```
+0x00: addi x1, x0, 42        ; retires
+0x04: addi x2, x0, 10        ; retires
+0x08: add  x3, x1, x2        ; retires
+0x0C: sw   x3, 0(x10)        ; retires
+0x10: 0x00000000              ; illegal (ID stage)
+0x14: 0x00000000              ; fetch misalign (IF stage, younger)
+```
+Expected: `exceptions[1]=1` (illegal wins), `exceptions_pc=0x10`.
+
+### 5. `exc_fetch_misalign` — Fetch PC Misalign
+Uses `start_pc=1` (misaligned). The very first fetch triggers a misalign
+exception in IF. No instructions execute.
+Expected: `exceptions[0]=1`, `exceptions_pc=0x01`.
+
+## Precise Exception Handling
+
+The core implements precise exceptions:
+1. **Detection**: Exception detected at IF (fetch misalign), ID (illegal),
+   or EX (branch misalign) stage.
+2. **Stop fetch**: `stop_fetch_exc` halts instruction fetch immediately.
+3. **Flush younger**: Faulting and younger instructions are flushed.
+4. **Drain older**: Older instructions continue to execute and retire.
+5. **Halt**: When the back end is empty (`backend_empty`), the core halts
+   and reports the latched exception cause and PC.
+
+The `configuration` mask only affects the external `exceptions` output;
+internal pipeline control uses raw (unmasked) exception events.
+
+## Waveform Debug
+
+### VCS + Verdi (FSDB)
+```bash
+make comp                 # FSDB dump enabled via +define+FSDB
+make run TEST=exc_illegal
+make verdi                # open Verdi with FSDB + KDB source debug
+```
+
+### VCD (if Verdi unavailable)
+```bash
+make run TEST=exc_illegal RUN_ARGS="+VCD"
+# opens hiriscy_soc.vcd — view with gtkwave or similar
+```
+
+## Cleanup
+```bash
+make clean
+```

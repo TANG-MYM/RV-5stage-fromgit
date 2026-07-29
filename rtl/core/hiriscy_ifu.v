@@ -16,7 +16,10 @@
 //   2. Sequential PC + 4 (the static not-taken prediction)
 //
 // WFI gating: while a WFI is draining (wfi_active) or the core is parked in
-// WFI idle (wfi_idle), instruction fetch is stopped (imem_rd deasserted).
+// WFI idle (wfi_idle), instruction fetch is stopped (imem_ce deasserted).
+//
+// Fetch-stage PC misalignment check: if pc_if[1:0] != 00, raise
+// fetch_misalign (consumed by the core's exception FSM).
 // ============================================================================
 
 module hiriscy_ifu (
@@ -30,16 +33,23 @@ module hiriscy_ifu (
   input  wire        wfi_active,
   input  wire        wfi_idle,
 
+  // Exception fetch gating
+  input  wire        stop_fetch_exc,
+
   // Outputs
   output wire [31:0] pc_next,
   output wire [31:0] imem_addr,
-  output wire        imem_rd
+  output wire        imem_ce,
+  output wire        fetch_misalign
 );
 
   // Static not-taken prediction: take the sequential path unless EX corrects us.
   assign pc_next   = branch_mispredict_ex ? branch_target_ex : (pc_if + 32'd4);
 
   assign imem_addr = pc_if;
-  assign imem_rd   = ~(wfi_active | wfi_idle);   // WFI stops instruction fetch
+  assign imem_ce   = ~(wfi_active | wfi_idle | stop_fetch_exc);
+
+  // Fetch-stage PC alignment check
+  assign fetch_misalign = (pc_if[1:0] != 2'b00);
 
 endmodule

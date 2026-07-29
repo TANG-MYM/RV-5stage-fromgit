@@ -1,87 +1,86 @@
 // ============================================================================
 // hiriscy_exu.v — Execute Unit (EX datapath, combinational)
 // ============================================================================
-// Performs operand forwarding, ALU computation, branch/jump resolution,
-// mispredict detection, exception detection and the EX-stage writeback select.
-// Instantiates hiriscy_alu. All EX pipeline state (the ID/EX register) lives in
-// the core top.
+// Performs ALU computation, branch/jump resolution, mispredict detection,
+// and branch-target misalignment detection.
 //
-// Forwarding inputs:
-//   fwd_ex_mem_data : EX/MEM ALU/PC result (tap from EX/MEM register)
-//   fwd_mem_wb_data : MEM/WB writeback data (tap from MEM/WB writeback mux)
+// All operand selection is done in the ID stage:
+//   op1_ex       : PC (JAL/JALR/AUIPC) or forwarded rs1 (everything else)
+//   op2_ex       : imm (everything except R-type) or rs2 (R-type)
+//   store_data   : forwarded rs2 (for STORE write data AND B-type comparison)
+//   pc_base      : PC (JAL/B-type) or forwarded rs1 (JALR) — for branch target
+//
+// The ALU b-input selects: 4 for JAL/JALR (PC+4 return addr), store_data for
+// B-type (rs2 comparison), op2 otherwise.  branch_target = pc_base + op2
+// (op2 carries imm for all jumps/branches; JALR clears bit 0 of the sum).
+//
+// Exception detection: only branch-target misalignment here. The RAW flag
+// is output (unmasked); the core uses it for internal flush/drain/halt and
+// applies the configuration mask only on the external exceptions output.
+// Illegal instruction is flagged in the IDU (ctrl[CTRL_ILLEGAL]).
 // ============================================================================
 
 module hiriscy_exu (
-  // ID/EX register contents
-  input  wire [31:0]          pc_ex,
-  input  wire [43:0]          ctrl_ex,       // CTRL_W = 44
-  input  wire [31:0]          rs1_data_ex,
-  input  wire [31:0]          rs2_data_ex,
-  input  wire [31:0]          imm_ex,
+  // ID/EX register contents (operand MUXes already done in ID)
+  input  wire [31:0]          pc_ex,          // actual PC (for exception reporting)
+  input  wire [31:0]          pc_base_ex,     // branch target base (PC or rs1)
+  input  wire [31:0]          op1_ex,         // ALU operand A
+  input  wire [31:0]          op2_ex,         // ALU operand B / jump adder imm
+  input  wire [31:0]          store_data_ex,  // forwarded rs2 (STORE + B-type compare)
+  input  wire [43:0]          ctrl_ex,        // CTRL_W = 44
 
-  // Forwarding controls + taps
-  input  wire [1:0]           fwd_rs1,
-  input  wire [1:0]           fwd_rs2,
-  input  wire [31:0]          fwd_ex_mem_data,
-  input  wire [31:0]          fwd_mem_wb_data,
-
-  // Exception masks (1 = SUPPRESS)
-  input  wire [1:0]           configuration,
-
-  // Datapath results to EX/MEM register
+  // Datapath result to EX/MEM register
   output wire [31:0]          ex_result,
-  output wire [31:0]          store_data,    // forwarded rs2 (store data)
 
   // Branch resolution (to IFU next-PC + hazard)
   output wire                 branch_mispredict_ex,
   output wire [31:0]          branch_target_ex,
 
-  // Exception report (to core control FSM)
-  output wire [1:0]           exceptions_next,
-  output wire                 any_exc
+  // Raw branch-target misalignment flag (unmasked; core handles flush/drain
+  // and applies the configuration mask only on the external output)
+  output wire                 branch_misalign_raw
 );
 
   `include "hiriscy_defs.vh"
 
-  // ── Forwarding MUXes ──────────────────────────────────────────────────
-  wire [31:0] rs1_fwd = (fwd_rs1 == FWD_EX_MEM) ? fwd_ex_mem_data :
-                        (fwd_rs1 == FWD_MEM_WB) ? fwd_mem_wb_data : rs1_data_ex;
-  wire [31:0] rs2_fwd = (fwd_rs2 == FWD_EX_MEM) ? fwd_ex_mem_data :
-                        (fwd_rs2 == FWD_MEM_WB) ? fwd_mem_wb_data : rs2_data_ex;
-
-  assign store_data = rs2_fwd;
-
   // ── ALU ───────────────────────────────────────────────────────────────
-  wire [31:0] alu_b, alu_result_ex;
+  // b-input priority: 4 for JAL/JALR (PC+4), store_data for B-type (rs2
+  // comparison), op2_ex otherwise (imm for I/S/U-type, rs2 for R-type).
+  wire is_branch_ex = (ctrl_ex[`CTRL_BR_TYPE] != BR_NONE);
+  wire [31:0] alu_b = (ctrl_ex[`CTRL_JAL] | ctrl_ex[`CTRL_JALR]) ? 32'd4 :
+                      is_branch_ex ? store_data_ex : op2_ex;
+  wire [31:0] alu_result_ex;
   wire        alu_zero;
 
-  assign alu_b = ctrl_ex[`CTRL_ALU_SRC] ? imm_ex : rs2_fwd;
-
   hiriscy_alu u_alu (
-    .a      (rs1_fwd),
+    .a      (op1_ex),
     .b      (alu_b),
     .op     (ctrl_ex[`CTRL_ALU_OP]),
     .result (alu_result_ex),
     .zero   (alu_zero)
   );
 
+  // ex_result = ALU result (PC+4 for JAL/JALR via op1=PC, b=4)
+  assign ex_result = alu_result_ex;
+
   // ── Branch resolution ─────────────────────────────────────────────────
+  // B-type: op1 = rs1, store_data = rs2 (comparison).  JAL/JALR: always taken.
   wire [2:0] br_type = ctrl_ex[`CTRL_BR_TYPE];
   wire branch_taken_ex =
-    (br_type == BR_EQ)  ? (rs1_fwd == rs2_fwd)                 :
-    (br_type == BR_NE)  ? (rs1_fwd != rs2_fwd)                 :
-    (br_type == BR_LT)  ? ($signed(rs1_fwd) <  $signed(rs2_fwd)) :
-    (br_type == BR_GE)  ? ($signed(rs1_fwd) >= $signed(rs2_fwd)) :
-    (br_type == BR_LTU) ? (rs1_fwd <  rs2_fwd)                 :
-    (br_type == BR_GEU) ? (rs1_fwd >= rs2_fwd)                 : 1'b0;
+    (br_type == BR_EQ)  ? (op1_ex == store_data_ex)                 :
+    (br_type == BR_NE)  ? (op1_ex != store_data_ex)                 :
+    (br_type == BR_LT)  ? ($signed(op1_ex) <  $signed(store_data_ex)) :
+    (br_type == BR_GE)  ? ($signed(op1_ex) >= $signed(store_data_ex)) :
+    (br_type == BR_LTU) ? (op1_ex <  store_data_ex)                 :
+    (br_type == BR_GEU) ? (op1_ex >= store_data_ex)                 : 1'b0;
 
+  // Branch target = pc_base + op2 (op2 = imm for all jumps/branches).  JALR clears bit 0.
+  wire [31:0] branch_target_sum = pc_base_ex + op2_ex;
   wire [31:0] branch_target_computed = ctrl_ex[`CTRL_JALR] ?
-    {alu_result_ex[31:1], 1'b0} : (pc_ex + imm_ex);
+    {branch_target_sum[31:1], 1'b0} : branch_target_sum;
 
   // ── Mispredict detection ──────────────────────────────────────────────
-  // The front end predicts STATIC not-taken (sequential PC+4). A branch/jump
-  // therefore mispredicts exactly when it is actually taken; otherwise the
-  // sequential prediction was correct and nothing is redirected.
+  // Static not-taken prediction: a branch/jump mispredicts when actually taken.
   wire is_branch_or_jump;
   assign is_branch_or_jump = (ctrl_ex[`CTRL_BR_TYPE] != BR_NONE) ||
                               ctrl_ex[`CTRL_JAL] || ctrl_ex[`CTRL_JALR];
@@ -90,29 +89,12 @@ module hiriscy_exu (
   assign actual_taken = branch_taken_ex || ctrl_ex[`CTRL_JAL] || ctrl_ex[`CTRL_JALR];
 
   assign branch_mispredict_ex = is_branch_or_jump && actual_taken;
+  assign branch_target_ex     = branch_target_computed;
 
-  // Only consumed by the IFU when branch_mispredict_ex is asserted (i.e. when
-  // actual_taken is true), so the computed target is always the right value.
-  assign branch_target_ex = branch_target_computed;
-
-  // ── Exception detection ───────────────────────────────────────────────
-  //  - PC-misaligned : a taken branch/jump whose target is not 4-byte aligned
-  //  - illegal instr : decoder flagged the EX-stage instruction as illegal
-  //  configuration[i] = 1 SUPPRESSES the corresponding exception.
-  wire exc_misalign_raw = is_branch_or_jump && actual_taken &&
-                          (branch_target_computed[1:0] != 2'b00);
-  wire exc_illegal_raw  = ctrl_ex[`CTRL_ILLEGAL];
-
-  wire exc_misalign = exc_misalign_raw & ~configuration[0];
-  wire exc_illegal  = exc_illegal_raw  & ~configuration[1];
-
-  assign exceptions_next = {exc_illegal, exc_misalign};
-  assign any_exc         = exc_misalign | exc_illegal;
-
-  // ── EX result select ──────────────────────────────────────────────────
-  // WB_PC4 -> return address (PC+4); everything else (WB_ALU / WB_MEM path)
-  // carries the ALU result forward (the LSU substitutes load data in MEM).
-  assign ex_result = (ctrl_ex[`CTRL_WB_SEL] == WB_PC4) ? (pc_ex + 32'd4)
-                                                       : alu_result_ex;
+  // ── Exception: branch-target misalignment ─────────────────────────────
+  //  Raw flag (unmasked). The core uses it for internal flush/drain/halt;
+  //  the configuration mask is applied only on the external exceptions output.
+  assign branch_misalign_raw = is_branch_or_jump && actual_taken &&
+                               (branch_target_computed[1:0] != 2'b00);
 
 endmodule

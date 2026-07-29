@@ -2,36 +2,41 @@
 // hiriscy_soc.v — HiRiscy SoC Top-Level (Harvard, no cache / no AXI)
 // ----------------------------------------------------------------------------
 //   - Instruction memory : depth x 32-bit read-only ROM (combinational read)
-//   - Data memory        : 4 KB SRAM, simple 1-cycle-latency handshake
+//   - Data memory        : 256 x 128-bit SRAM (synchronous read)
 //   - No caches, no AXI interconnect, no peripherals
+//   - Unified memory interface: clk, addr, we, ce, we_data, rd_data
 // ============================================================================
 
 module hiriscy_soc #(
-  parameter IMEM_DEPTH = 1024,            // instruction words (depth x 32)
-  parameter DMEM_DEPTH = 1024,            // data words (1024 x 32 = 4 KB)
+  parameter IMEM_DEPTH = 1024,
+  parameter DMEM_DEPTH = 256,
   parameter INIT_FILE  = "firmware.hex"
 )(
   input  wire        clk,
   input  wire        rst_n,
 
   // Run control / status
-  input  wire        start_pause,         // rising edge restarts @ start_pc; level: 1=run, 0=pause
-  input  wire [11:0] start_pc,            // (re)start PC (byte address)
-  input  wire [1:0]  configuration,       // exception masks (1 = suppress): [0]=misalign, [1]=illegal
-  output wire [1:0]  core_status,         // [0]=IDLE (exception halt or WFI retire), [1]=WFI retired
-  output wire [1:0]  exceptions,          // [0]=PC-misaligned, [1]=illegal instruction
-  output wire [31:0] exceptions_pc        // PC of the faulting instruction (latched on halt)
+  input  wire        start_pause,
+  input  wire [11:0] start_pc,
+  input  wire [1:0]  configuration,
+  output wire [1:0]  core_status,
+  output wire [1:0]  exceptions,
+  output wire [31:0] exceptions_pc
 );
 
   // ── Core <-> Instruction memory ────────────────────────────────────────
-  wire [31:0] core_imem_addr, core_imem_rdata;
-  wire        core_imem_rd,   core_imem_ready;
+  wire [31:0] core_imem_addr;
+  wire        core_imem_ce;
+  wire        core_imem_we;
+  wire [31:0] core_imem_we_data;
+  wire [31:0] core_imem_rd_data;
 
   // ── Core <-> Data memory ───────────────────────────────────────────────
-  wire [31:0] core_dmem_addr, core_dmem_wdata, core_dmem_rdata;
-  wire        core_dmem_rd,   core_dmem_wr,    core_dmem_ready;
-  wire [1:0]  core_dmem_width;//计算的数据类型不同，位宽不同
-  wire        core_dmem_sign_ext;//标志是否进行符号扩展
+  wire [11:0] core_dmem_addr;
+  wire        core_dmem_ce;
+  wire [127:0] core_dmem_we;
+  wire [127:0] core_dmem_we_data;
+  wire [127:0] core_dmem_rd_data;
 
   // ══════════════════════════════════════════════════════════════════════
   // CPU Core
@@ -46,36 +51,37 @@ module hiriscy_soc #(
     .exceptions    (exceptions),
     .exceptions_pc (exceptions_pc),
     .imem_addr     (core_imem_addr),
-    .imem_rd       (core_imem_rd),
-    .imem_rdata    (core_imem_rdata),
-    .imem_ready    (core_imem_ready),
+    .imem_ce       (core_imem_ce),
+    .imem_we       (core_imem_we),
+    .imem_we_data  (core_imem_we_data),
+    .imem_rd_data  (core_imem_rd_data),
     .dmem_addr     (core_dmem_addr),
-    .dmem_rd       (core_dmem_rd),
-    .dmem_wr       (core_dmem_wr),
-    .dmem_width    (core_dmem_width),
-    .dmem_sign_ext (core_dmem_sign_ext),
-    .dmem_wdata    (core_dmem_wdata),
-    .dmem_rdata    (core_dmem_rdata),
-    .dmem_ready    (core_dmem_ready),
+    .dmem_ce       (core_dmem_ce),
+    .dmem_we       (core_dmem_we),
+    .dmem_we_data  (core_dmem_we_data),
+    .dmem_rd_data  (core_dmem_rd_data),
     .ext_irq       (1'b0),
     .timer_irq     (1'b0)
   );
 
   // ══════════════════════════════════════════════════════════════════════
-  // Instruction memory (read-only ROM, depth x 32)
+  // Instruction memory (depth x 32-bit read-only ROM)
   // ══════════════════════════════════════════════════════════════════════
   hiriscy_imem #(
     .DEPTH     (IMEM_DEPTH),
     .INIT_FILE (INIT_FILE)
   ) u_imem (
-    .addr  (core_imem_addr),
-    .rd_en (core_imem_rd),
-    .rdata (core_imem_rdata),
-    .ready (core_imem_ready)
+    .clk      (clk),
+    .rst_n    (rst_n),
+    .addr     (core_imem_addr),
+    .ce       (core_imem_ce),
+    .we       (core_imem_we),
+    .we_data  (core_imem_we_data),
+    .rd_data  (core_imem_rd_data)
   );
 
   // ══════════════════════════════════════════════════════════════════════
-  // Data memory (4 KB SRAM, simple handshake)
+  // Data memory (256 x 128-bit SRAM)
   // ══════════════════════════════════════════════════════════════════════
   hiriscy_dmem #(
     .DEPTH (DMEM_DEPTH)
@@ -83,13 +89,10 @@ module hiriscy_soc #(
     .clk      (clk),
     .rst_n    (rst_n),
     .addr     (core_dmem_addr),
-    .rd_en    (core_dmem_rd),
-    .wr_en    (core_dmem_wr),
-    .width    (core_dmem_width),
-    .sign_ext (core_dmem_sign_ext),
-    .wdata    (core_dmem_wdata),
-    .rdata    (core_dmem_rdata),
-    .ready    (core_dmem_ready)
+    .ce       (core_dmem_ce),
+    .we       (core_dmem_we),
+    .we_data  (core_dmem_we_data),
+    .rd_data  (core_dmem_rd_data)
   );
 
 endmodule
