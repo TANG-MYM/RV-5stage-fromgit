@@ -24,6 +24,8 @@ sim/firmware.hex
 
 # ---- Python artifacts ----
 **/__pycache__/
+parser.out
+parsetab.py
 
 # ---- Icarus Verilog ----
 sim_brv32p

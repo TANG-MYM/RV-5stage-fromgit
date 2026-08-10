@@ -41,10 +41,7 @@
 // (0x10500073) is the only legal SYSTEM instruction; anything else is illegal.
 // ============================================================================
 
-module hiriscy_idu #(
-  parameter PIPE_MODE = 5          // 5 = 3-source forwarding (EX/MEM/WB);
-                                   // 3 = 2-source (MEM/WB merged -> FWD_WB dead)
-)(
+module hiriscy_idu (
   // ── Instruction decode ────────────────────────────────────────────────
   input  wire [31:0]          instr,
   input  wire [31:0]          pc_id,          // PC of this instruction (for op1/pc_base MUX)
@@ -220,20 +217,15 @@ module hiriscy_idu #(
   wire wb_rd_addr_nz  = (wb_rd  != 5'd0);
   wire ex_can_fwd     = ex_reg_wr & ~ex_mem_rd & ex_rd_addr_nz;
 
-  // FWD_WB is only meaningful in 5-stage. In 3-stage MEM and WB are merged,
-  // so the WB tap is the same instruction as the MEM tap (FWD_MEM wins by
-  // priority and FWD_WB is dead); gate it off to keep the select clean.
-  wire wb_fwd_en = (PIPE_MODE == 5);
-
   wire [1:0] fwd_rs1_sel =
     (ex_can_fwd  & (ex_rd  == rs1_addr)) ? FWD_EX  :
     (mem_reg_wr  & mem_rd_addr_nz & (mem_rd == rs1_addr)) ? FWD_MEM :
-    (wb_fwd_en & wb_reg_wr & wb_rd_addr_nz & (wb_rd  == rs1_addr)) ? FWD_WB : FWD_NONE;
+    (wb_reg_wr   & wb_rd_addr_nz  & (wb_rd  == rs1_addr)) ? FWD_WB  : FWD_NONE;
 
   wire [1:0] fwd_rs2_sel =
     (ex_can_fwd  & (ex_rd  == rs2_addr)) ? FWD_EX  :
     (mem_reg_wr  & mem_rd_addr_nz & (mem_rd == rs2_addr)) ? FWD_MEM :
-    (wb_fwd_en & wb_reg_wr & wb_rd_addr_nz & (wb_rd  == rs2_addr)) ? FWD_WB : FWD_NONE;
+    (wb_reg_wr   & wb_rd_addr_nz  & (wb_rd  == rs2_addr)) ? FWD_WB  : FWD_NONE;
 
   // ── Forwarding MUX (inside IDU) ───────────────────────────────────────
   wire [31:0] rs1_data_fwd = (fwd_rs1_sel == FWD_EX)  ? ex_result      :

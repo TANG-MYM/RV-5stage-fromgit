@@ -10,8 +10,7 @@
 module hiriscy_soc #(
   parameter IMEM_DEPTH = 1024,
   parameter DMEM_DEPTH = 256,
-  parameter INIT_FILE  = "firmware.hex",
-  parameter PIPE_MODE  = 5          // 5-stage or 3-stage pipeline (passed to core)
+  parameter INIT_FILE  = "firmware.hex"
 )(
   input  wire        clk,
   input  wire        rst_n,
@@ -42,7 +41,7 @@ module hiriscy_soc #(
   // ══════════════════════════════════════════════════════════════════════
   // CPU Core
   // ══════════════════════════════════════════════════════════════════════
-  hiriscy_core #(.PIPE_MODE(PIPE_MODE)) u_core (
+  hiriscy_core u_core (
     .clk           (clk),
     .rst_n         (rst_n),
     .start_pause   (start_pause),

@@ -2,6 +2,15 @@
 
 module tb_hiriscy_soc;
 
+  // Pipeline mode is selected at compile time. Default = 5-stage.
+  // Build the 3-stage variant with:  make comp PIPE=3
+  // (which adds +define+PIPE_MODE_3).
+`ifdef PIPE_MODE_3
+  localparam PIPE_MODE = 3;
+`else
+  localparam PIPE_MODE = 5;
+`endif
+
   reg         clk, rst_n, start_pause;
   reg  [11:0] start_pc;
   reg  [1:0]  configuration;
@@ -11,7 +20,7 @@ module tb_hiriscy_soc;
   initial clk = 0;
   always #5 clk = ~clk;
 
-  hiriscy_soc #(.IMEM_DEPTH(1024), .DMEM_DEPTH(256), .INIT_FILE("")) dut (
+  hiriscy_soc #(.IMEM_DEPTH(1024), .DMEM_DEPTH(256), .INIT_FILE(""), .PIPE_MODE(PIPE_MODE)) dut (
     .clk(clk), .rst_n(rst_n), .start_pause(start_pause),
     .start_pc(start_pc), .configuration(configuration),
     .core_status(core_status), .exceptions(exceptions),

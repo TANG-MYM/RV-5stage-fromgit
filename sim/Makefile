@@ -10,6 +10,7 @@
 #   make run TEST=exc_priority
 #   make run TEST=exc_fetch_misalign
 #   make test_all                # run every test and summarize
+#   make comp PIPE=3             # build the 3-stage pipeline variant
 #   make verdi                   # open FSDB in Verdi
 #   make clean
 # ============================================================================
@@ -39,6 +40,13 @@ endif
 SIM_OPTS := -l sim.log
 RUN_ARGS ?=
 TEST     ?=
+PIPE     ?= 5          # pipeline mode: 5 (default) or 3
+
+# Add +define+PIPE_MODE_3 to the 3-stage build so the testbench selects the
+# 3-stage variant at elaboration (otherwise the 5-stage default is used).
+ifeq ($(PIPE),3)
+VCS_OPTS += +define+PIPE_MODE_3
+endif
 
 TESTS := basic exc_illegal exc_branch_misalign exc_priority exc_fetch_misalign
 

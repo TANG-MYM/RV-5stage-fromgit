@@ -33,9 +33,7 @@
 //       instructions, and parks the core in IDLE.
 // ============================================================================
 
-module hiriscy_core #(
-  parameter PIPE_MODE = 5          // 5 = 5-stage; 3 = 3-stage ({IF,ID},{EX},{MEM,WB})
-)(
+module hiriscy_core (
   input  wire        clk,
   input  wire        rst_n,
 
@@ -178,29 +176,14 @@ module hiriscy_core #(
   wire exc_from_if = fetch_misalign;             // raw event (IF)
 
   wire        any_exc    = exc_from_ex | exc_from_id | exc_from_if;
-  // Priority by pipeline mode:
-  //   5-stage: EX > ID > IF  (three different instructions, oldest first)
-  //   3-stage:  EX > IF > ID (IF and ID merged in S1; fetch misalign is the
-  //             primary fault of that instruction, so it wins over illegal.
-  //             pc_if == pc_id in 3-stage, so the PC pick is mode-agnostic.)
-  wire [1:0]  exc_cause  = (PIPE_MODE == 3) ?
-                           (exc_from_ex ? 2'b01 :   // branch misalign (S2, oldest)
-                            exc_from_if ? 2'b01 :   // fetch misalign (S1)
-                            exc_from_id ? 2'b10 :   // illegal (S1)
-                                         2'b00) :
-                           (exc_from_ex ? 2'b01 :   // branch misalign (EX, oldest)
-                            exc_from_id ? 2'b10 :   // illegal (ID)
-                            exc_from_if ? 2'b01 :   // fetch misalign (IF, youngest)
-                                         2'b00);
-  wire [31:0] exc_pc     = (PIPE_MODE == 3) ?
-                           (exc_from_ex ? pc_ex :
-                            exc_from_if ? pc_if :
-                            exc_from_id ? pc_id :
-                                         32'b0) :
-                           (exc_from_ex ? pc_ex :
-                            exc_from_id ? pc_id :
-                            exc_from_if ? pc_if :
-                                         32'b0);
+  wire [1:0]  exc_cause  = exc_from_ex ? 2'b01 :   // misalign (branch, oldest)
+                           exc_from_id ? 2'b10 :   // illegal
+                           exc_from_if ? 2'b01 :   // misalign (fetch, youngest)
+                                        2'b00;
+  wire [31:0] exc_pc     = exc_from_ex ? pc_ex :   // branch instr PC
+                           exc_from_id ? pc_id :   // illegal instr PC
+                           exc_from_if ? pc_if :   // misaligned fetch PC
+                                        32'b0;
 
   // Masked exception output (configuration = 1 suppresses the corresponding
   // exception bit on the external port; internal handling is unaffected).
@@ -208,16 +191,23 @@ module hiriscy_core #(
                                    exc_cause[0] & ~configuration[0] };
 
   // Exception flush: kill faulting + younger instructions by stage of origin.
-  //   5-stage: IF/ID is bubbled (held by exc_pending) while the back end
-  //            drains; ID/EX is bubbled at detection (and held). EX/MEM is
-  //            bubbled only for an EX (branch) fault.
-  //   3-stage: there is no IF/ID register, so flush_id_exc is unused. IF and
-  //            ID are merged in S1, so an IF (fetch) fault must also bubble
-  //            ID/EX. ID/EX is held by exc_pending during drain (no IF/ID NOP
-  //            to keep it bubbled). EX/MEM stays the same (EX fault only).
-  assign flush_id_exc  = (PIPE_MODE == 5) ? (any_exc | exc_pending) : 1'b0;
-  assign flush_ex_exc  = (PIPE_MODE == 3) ? (any_exc | exc_pending)
-                                          : (exc_from_ex | exc_from_id | exc_pending);
+  //   IF exception  : only IF/ID is faulting-or-younger; ID/EX, EX/MEM are older
+  //   ID exception  : IF/ID and ID/EX are faulting-or-younger; EX/MEM are older
+  //   EX exception  : IF/ID, ID/EX, EX/MEM all contain faulting-or-younger
+  // flush_id_exc is held by exc_pending so IF/ID stays a bubble while the
+  // back end drains (any_exc may drop once the faulting instruction is
+  // flushed out of IF/ID).
+  //
+  // flush_ex_exc also holds for the whole exc_pending drain: IF/ID flush
+  // inserts architectural NOP 0x00000013 (addi x0,0,0), whose ctrl is NOT
+  // all-zero. If that NOP were allowed into EX after the faulting ID/EX
+  // instruction is gone, backend_empty would never assert and the core
+  // would never halt. Holding flush_ex during pending keeps true bubbles
+  // in ID/EX. (Pure IF misalign only occurs on an empty front-end in this
+  // design — redirected misaligned targets are reported as EX exceptions —
+  // so holding flush_ex here does not retire-kill a live older ID instr.)
+  assign flush_id_exc  = any_exc | exc_pending;
+  assign flush_ex_exc  = exc_from_ex | exc_from_id | exc_pending;
   assign flush_mem_exc = exc_from_ex;
 
   // Stop fetch as soon as an exception is seen (combinational, same cycle).
@@ -345,37 +335,26 @@ module hiriscy_core #(
   assign imem_we_data = 32'b0;
 
   // ── IF/ID Pipeline Register ───────────────────────────────────────────
-  //   5-stage: register with NOP injection on flush / hold on stall.
-  //   3-stage: IF and ID merged — fetch feeds decode combinationally. The
-  //            NOP-injection role is covered by ID/EX bubbling (flush_ex)
-  //            plus PC freeze (stop_fetch_exc / wfi); S1 holding on stall is
-  //            covered by freezing the PC (stall_if), since instr_id then
-  //            stays mem[pc_if] combinationally.
-  generate
-    if (PIPE_MODE == 3) begin : g_ifid_bypass
-      assign pc_id    = pc_if;
-      assign instr_id = imem_rd_data;
-    end else begin : g_ifid_reg
-      wire        ifid_nop = restart | flush_id;
-      wire        ifid_en  = restart | (run & (flush_id | (~stall_id_final & ~mem_stall)));
-      wire [31:0] pc_id_d    = ifid_nop ? 32'b0        : pc_if;
-      wire [31:0] instr_id_d = ifid_nop ? 32'h0000_0013 : imem_rd_data;
+  //   restart/flush inject a NOP; otherwise capture the fetched instruction
+  //   when advancing; hold when paused or stalled.
+  wire        ifid_nop = restart | flush_id;
+  wire        ifid_en  = restart | (run & (flush_id | (~stall_id_final & ~mem_stall)));
+  wire [31:0] pc_id_d    = ifid_nop ? 32'b0        : pc_if;
+  wire [31:0] instr_id_d = ifid_nop ? 32'h0000_0013 : imem_rd_data;
 
-      hiriscy_dff_en #(.WIDTH(32)) u_pc_id (
-        .clk (clk), .rst_n (rst_n), .en (ifid_en),
-        .rst_val (32'b0), .d (pc_id_d), .q (pc_id)
-      );
-      hiriscy_dff_en #(.WIDTH(32)) u_instr_id (
-        .clk (clk), .rst_n (rst_n), .en (ifid_en),
-        .rst_val (32'h0000_0013), .d (instr_id_d), .q (instr_id)
-      );
-    end
-  endgenerate
+  hiriscy_dff_en #(.WIDTH(32)) u_pc_id (
+    .clk (clk), .rst_n (rst_n), .en (ifid_en),
+    .rst_val (32'b0), .d (pc_id_d), .q (pc_id)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_instr_id (
+    .clk (clk), .rst_n (rst_n), .en (ifid_en),
+    .rst_val (32'h0000_0013), .d (instr_id_d), .q (instr_id)
+  );
 
   // ════════════════════════════════════════════════════════════════════
   // ID — Decode unit (+ integrated hazard/forwarding) + register file
   // ════════════════════════════════════════════════════════════════════
-  hiriscy_idu #(.PIPE_MODE(PIPE_MODE)) u_idu (
+  hiriscy_idu u_idu (
     // Decode
     .instr           (instr_id),
     .pc_id           (pc_id),
@@ -535,33 +514,20 @@ module hiriscy_core #(
   );
 
   // ── MEM/WB Pipeline Register ──────────────────────────────────────────
-  //   5-stage: register; restart clears to a bubble.
-  //   3-stage: MEM and WB merged — LSU result feeds RF write combinationally.
-  //            The restart clearing is handled by exmem_nop clearing EX/MEM
-  //            (S3's state), so a wire-through suffices here: when EX/MEM is
-  //            forced to a bubble on restart, mem_result/ctrl_mem/rd_addr_mem
-  //            are all zero and so are the bypassed WB taps.
-  generate
-    if (PIPE_MODE == 3) begin : g_memwb_bypass
-      assign ctrl_wb       = ctrl_mem;
-      assign mem_result_wb = mem_result;
-      assign rd_addr_wb    = rd_addr_mem;
-    end else begin : g_memwb_reg
-      wire memwb_en = restart | (run & ~mem_stall);
+  //   restart clears to a bubble; otherwise advance when running & not stalled.
+  wire memwb_en = restart | (run & ~mem_stall);
 
-      hiriscy_dff_en #(.WIDTH(`CTRL_W)) u_ctrl_wb (
-        .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val ({`CTRL_W{1'b0}}),
-        .d   (restart ? {`CTRL_W{1'b0}} : ctrl_mem), .q (ctrl_wb)
-      );
-      hiriscy_dff_en #(.WIDTH(32)) u_mem_result_wb (
-        .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (32'b0),
-        .d   (restart ? 32'b0 : mem_result), .q (mem_result_wb)
-      );
-      hiriscy_dff_en #(.WIDTH(5)) u_rd_addr_wb (
-        .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (5'b0),
-        .d   (restart ? 5'b0 : rd_addr_mem), .q (rd_addr_wb)
-      );
-    end
-  endgenerate
+  hiriscy_dff_en #(.WIDTH(`CTRL_W)) u_ctrl_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val ({`CTRL_W{1'b0}}),
+    .d   (restart ? {`CTRL_W{1'b0}} : ctrl_mem), .q (ctrl_wb)
+  );
+  hiriscy_dff_en #(.WIDTH(32)) u_mem_result_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (32'b0),
+    .d   (restart ? 32'b0 : mem_result), .q (mem_result_wb)
+  );
+  hiriscy_dff_en #(.WIDTH(5)) u_rd_addr_wb (
+    .clk (clk), .rst_n (rst_n), .en (memwb_en), .rst_val (5'b0),
+    .d   (restart ? 5'b0 : rd_addr_mem), .q (rd_addr_wb)
+  );
 
 endmodule
