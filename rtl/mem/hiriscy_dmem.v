@@ -1,12 +1,3 @@
-// ============================================================================
-// hiriscy_dmem.v — Data SRAM (256 x 128-bit)
-// ----------------------------------------------------------------------------
-// Unified interface: clk, addr, we, ce, we_data, rd_data
-// we is 128-bit write strobe (mask) for we_data
-// Read data available next cycle (synchronous read)
-// Write data committed on the same cycle
-// ============================================================================
-
 module hiriscy_dmem #(
   parameter DEPTH = 256
 )(

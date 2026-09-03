@@ -1,22 +1,12 @@
-// ============================================================================
-// hiriscy_soc.v — HiRiscy SoC Top-Level (Harvard, no cache / no AXI)
-// ----------------------------------------------------------------------------
-//   - Instruction memory : depth x 32-bit read-only ROM (combinational read)
-//   - Data memory        : 256 x 128-bit SRAM (synchronous read)
-//   - No caches, no AXI interconnect, no peripherals
-//   - Unified memory interface: clk, addr, we, ce, we_data, rd_data
-// ============================================================================
-
 module hiriscy_soc #(
   parameter IMEM_DEPTH = 1024,
   parameter DMEM_DEPTH = 256,
   parameter INIT_FILE  = "firmware.hex",
-  parameter PIPE_MODE  = 5          // 5-stage or 3-stage pipeline (passed to core)
+  parameter PIPE_MODE  = 5
 )(
   input  wire        clk,
   input  wire        rst_n,
 
-  // Run control / status
   input  wire        start_pause,
   input  wire [11:0] start_pc,
   input  wire [1:0]  configuration,
@@ -25,23 +15,18 @@ module hiriscy_soc #(
   output wire [31:0] exceptions_pc
 );
 
-  // ── Core <-> Instruction memory ────────────────────────────────────────
   wire [31:0] core_imem_addr;
   wire        core_imem_ce;
   wire        core_imem_we;
   wire [31:0] core_imem_we_data;
   wire [31:0] core_imem_rd_data;
 
-  // ── Core <-> Data memory ───────────────────────────────────────────────
   wire [11:0] core_dmem_addr;
   wire        core_dmem_ce;
   wire [127:0] core_dmem_we;
   wire [127:0] core_dmem_we_data;
   wire [127:0] core_dmem_rd_data;
 
-  // ══════════════════════════════════════════════════════════════════════
-  // CPU Core
-  // ══════════════════════════════════════════════════════════════════════
   hiriscy_core #(.PIPE_MODE(PIPE_MODE)) u_core (
     .clk           (clk),
     .rst_n         (rst_n),
@@ -65,9 +50,6 @@ module hiriscy_soc #(
     .timer_irq     (1'b0)
   );
 
-  // ══════════════════════════════════════════════════════════════════════
-  // Instruction memory (depth x 32-bit read-only ROM)
-  // ══════════════════════════════════════════════════════════════════════
   hiriscy_imem #(
     .DEPTH     (IMEM_DEPTH),
     .INIT_FILE (INIT_FILE)
@@ -81,9 +63,6 @@ module hiriscy_soc #(
     .rd_data  (core_imem_rd_data)
   );
 
-  // ══════════════════════════════════════════════════════════════════════
-  // Data memory (256 x 128-bit SRAM)
-  // ══════════════════════════════════════════════════════════════════════
   hiriscy_dmem #(
     .DEPTH (DMEM_DEPTH)
   ) u_dmem (

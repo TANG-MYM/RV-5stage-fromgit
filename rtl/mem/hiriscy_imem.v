@@ -1,10 +1,3 @@
-// ============================================================================
-// hiriscy_imem.v — Instruction Memory (register-file style, read-only)
-// ----------------------------------------------------------------------------
-// Unified interface: clk, addr, we, ce, we_data, rd_data
-// 32-bit data width, combinational (same-cycle) read
-// ============================================================================
-
 module hiriscy_imem #(
   parameter DEPTH     = 1024,
   parameter INIT_FILE = "firmware.hex"
